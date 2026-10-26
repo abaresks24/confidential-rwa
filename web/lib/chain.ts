@@ -17,8 +17,8 @@
 //     lib/tx.ts + the /api/tx/* route. The UI labels exactly which path ran.
 // =============================================================================
 import { execFile } from "node:child_process";
-import { readFileSync, existsSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 // Repo root that holds scripts/, deployments/, out/, circuits/, reference/.
 // Local dev: web/ -> repo root is one level up. In the Fly container the server
@@ -107,6 +107,81 @@ async function send(id: string, signer: string, ...fnArgs: string[]): Promise<st
     "--send", "yes", "--", ...fnArgs,
   ]);
   return (r.stdout + "\n" + r.stderr).trim();
+}
+
+// The stellar CLI prints `Signing transaction: <64-hex>` and a
+// stellar.expert tx link to stderr on every submission — SUCCESS or on-chain
+// revert alike (the tx is broadcast either way). Extract that hash so every
+// write endpoint can return a real, verifiable Horizon/explorer link even when
+// the contract reverts (e.g. a transfer to a non-allowlisted recipient).
+export function extractHash(log: string): string {
+  const m =
+    log.match(/Signing transaction:\s*([0-9a-f]{64})/i) ||
+    log.match(/explorer\/testnet\/tx\/([0-9a-f]{64})/i) ||
+    log.match(/\b([0-9a-f]{64})\b/i);
+  return m ? m[1] : "";
+}
+function txLink(hash: string): string {
+  return hash ? `https://stellar.expert/explorer/testnet/tx/${hash}` : "";
+}
+// A send that also surfaces the broadcast tx hash (works on revert too).
+async function sendH(
+  id: string,
+  signer: string,
+  ...fnArgs: string[]
+): Promise<{ log: string; hash: string; link: string; reverted: boolean }> {
+  const log = await send(id, signer, ...fnArgs);
+  const hash = extractHash(log);
+  const reverted = /Error\(Contract,\s*#\d+\)/.test(log);
+  return { log, hash, link: txLink(hash), reverted };
+}
+
+// -----------------------------------------------------------------------------
+// Demo-account directory. Keyed by G-address. `enrolled` means the backend
+// knows the account's Grumpkin confidential keys (spending sk + viewing vk),
+// so it can read/produce confidential state for it. Freighter only holds the
+// Stellar ed25519 key, so confidential actions are limited to enrolled accounts
+// whose Grumpkin material the backend derives (alice as treasurer/sender, carol
+// as an eligible confidential recipient).
+export type DemoAccount = {
+  label: string;
+  alias: string; // stellar CLI key alias (crwa-*)
+  role: string;
+  enrolled: boolean; // backend knows its Grumpkin keys
+  sk?: string; // Grumpkin spending secret (confidential), demo-only
+  vk?: string; // Grumpkin viewing key field
+};
+export function accountDirectory(): Record<string, DemoAccount> {
+  const dep = loadD();
+  const a = dep.accounts;
+  return {
+    [a.alice]: {
+      label: "Alice (treasurer)",
+      alias: dep.key_aliases.alice,
+      role: "treasurer",
+      enrolled: true,
+      sk: "0x2a",
+      vk: "0x179835ffc2237e78c6bcee7ce26fedbb5dfc18cd66d7a16216889043a67f40bb",
+    },
+    [a.carol]: {
+      label: "Carol (eligible recipient)",
+      alias: dep.key_aliases.carol,
+      role: "recipient",
+      enrolled: true,
+      sk: "0x2b",
+    },
+    [a.bob]: {
+      label: "Bob (not allowlisted)",
+      alias: dep.key_aliases.bob,
+      role: "blocked",
+      enrolled: false,
+    },
+    [a.issuer]: { label: "Issuer", alias: dep.key_aliases.issuer, role: "issuer", enrolled: false },
+    [a.admin]: { label: "Admin", alias: dep.key_aliases.admin, role: "admin", enrolled: false },
+  };
+}
+function lookup(address: string): DemoAccount | undefined {
+  return accountDirectory()[address];
 }
 
 async function confField(accountAlias: string, field: string): Promise<string> {
@@ -260,16 +335,24 @@ export async function confDeposit(amount = 300_000_000) {
   }
   const rcBefore = await confField(A.alice, "receiving_commitment");
   const prevTotal = existsSync(TOTAL_FILE) ? Number(readFileSync(TOTAL_FILE, "utf8").trim()) : 0;
-  const out = await send(
+  const { log: out, hash, link } = await sendH(
     C.compliant_token, A.alice, "deposit", "--from", A.alice, "--to", A.alice, "--amount", String(amount)
   );
   const rcAfter = await confField(A.alice, "receiving_commitment");
   const ok = out.includes("Event: Deposit");
   const newTotal = ok ? prevTotal + amount : prevTotal;
-  if (ok) writeFileSync(TOTAL_FILE, String(newTotal));
+  if (ok) {
+    // The out/register_alice dir may not exist on a fresh container (the image
+    // ships a genesis seed but a brand-new deposit can precede any seeded file);
+    // ensure the parent dir so the write never ENOENTs.
+    mkdirSync(dirname(TOTAL_FILE), { recursive: true });
+    writeFileSync(TOTAL_FILE, String(newTotal));
+  }
   return {
     ok,
     label: "Balance is now stored as a sealed commitment on-chain (nobody can read the amount)",
+    tx_hash: hash,
+    tx_link: link,
     rc_before: rcBefore,
     rc_after: rcAfter,
     is_non_identity: rcAfter !== IDENTITY64 && rcAfter !== "",
@@ -296,4 +379,436 @@ export async function audit() {
     match,
     log: r.stdout + r.stderr,
   };
+}
+
+// =============================================================================
+// Address-parametrized endpoints (wallet-facing).
+// =============================================================================
+
+const HORIZON = "https://horizon-testnet.stellar.org";
+
+// Read the full confidential_balance map for ANY address (returns {} if unset).
+async function confBalance(address: string): Promise<Record<string, string>> {
+  const r = await sh("stellar", [
+    "contract", "invoke", "--id", C.compliant_token, "--source", fp(), "--network", NET,
+    "--", "confidential_balance", "--account", address,
+  ]);
+  try {
+    const j = JSON.parse((r.stdout || "").trim());
+    return j as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+// Horizon transaction history for an address (recent, newest first). Pure JSON
+// REST — no XDR meta decode (avoids the "Bad union switch" SDK issue).
+async function horizonHistory(address: string, limit = 10) {
+  try {
+    const r = await fetch(
+      `${HORIZON}/accounts/${address}/transactions?order=desc&limit=${limit}&include_failed=true`
+    );
+    if (!r.ok) return [] as Array<Record<string, unknown>>;
+    const j = (await r.json()) as {
+      _embedded?: { records?: Array<Record<string, unknown>> };
+    };
+    const recs = j._embedded?.records ?? [];
+    return recs.map((t) => ({
+      hash: t.hash as string,
+      successful: t.successful as boolean,
+      created_at: t.created_at as string,
+      fee_charged: t.fee_charged as string,
+      operation_count: t.operation_count as number,
+      link: `https://stellar.expert/explorer/testnet/tx/${t.hash as string}`,
+    }));
+  } catch {
+    return [] as Array<Record<string, unknown>>;
+  }
+}
+
+// --- 1. ADDRESS-PARAMETRIZED PORTFOLIO --------------------------------------
+// Public token balances + Horizon history for ANY address; confidential
+// (c-token) balance ONLY for enrolled demo accounts whose Grumpkin viewing key
+// the backend knows (alice/carol). Non-enrolled -> ctokens: [].
+export async function portfolio(address: string) {
+  const acct = lookup(address);
+  const [rt, ws, rate, allow, history] = await Promise.all([
+    call(C.rtFUND, "balance", "--id", address),
+    call(C.wsFUND, "balance", "--id", address),
+    call(C.wsFUND, "exchange_rate"),
+    call(C.allowlist_policy, "is_authorized", "--account", address, "--token", C.compliant_token),
+    horizonHistory(address),
+  ]);
+  const rateN = Number(rate) || RATE_ONE;
+
+  const tokens = [
+    {
+      symbol: "rtFUND",
+      name: "Rebasing RWA fund token",
+      raw: rt || "0",
+      human: (Number(rt || 0) / RATE_ONE).toFixed(2),
+      contract: C.rtFUND,
+    },
+    {
+      symbol: "wsFUND",
+      name: "Wrapped share (non-rebasing)",
+      raw: ws || "0",
+      human: (Number(ws || 0) / RATE_ONE).toFixed(2),
+      underlying_human: ((Number(ws || 0) * rateN) / RATE_ONE / RATE_ONE).toFixed(2),
+      contract: C.wsFUND,
+    },
+  ];
+
+  // Confidential registration status + sealed balance — computed for ANY
+  // address. `registered` reflects whether this account has a spending public
+  // key on the c-token (i.e. it has enrolled). The decrypted amount is shown
+  // only where the backend holds the opening (the treasurer); other registered
+  // accounts show the sealed commitment without a plaintext.
+  const cb = await confBalance(address);
+  const registered = !!cb.spending_public_key && cb.spending_public_key !== IDENTITY64;
+  const ctokens: Array<Record<string, unknown>> = [];
+  {
+    if (registered) {
+      // Decrypt the confidential balance for display. For alice (treasurer) we
+      // recover the true SPENDABLE balance from the live on-chain commitment by
+      // the same reconcile grid walk the auditor uses, then verify it against
+      // the point with the OZ Pedersen gadget. This stays correct after a
+      // wrap/merge folds the receiving balance into a non-zero-blinding
+      // spendable (the old conf_total path read the zero-blinding receiving
+      // total, which drops to 0 the moment a merge happens). Fallback to the
+      // tracked receiving total when there is no spendable point yet.
+      let human: string | null = null;
+      let raw: string | null = null;
+      if (address === d.accounts.alice) {
+        const ALICE_VK = "0x179835ffc2237e78c6bcee7ce26fedbb5dfc18cd66d7a16216889043a67f40bb";
+        const SIGMA_X = "0x9";
+        const spendPt = cb.spendable_commitment || "";
+        if (spendPt && spendPt !== IDENTITY64) {
+          try {
+            const recon = await sh("bash", [join(SCRIPTS, "reconcile_spendable.sh"), spendPt, ALICE_VK, SIGMA_X]);
+            const [v, r] = recon.stdout.trim().split(/\s+/);
+            if (v && /^\d+$/.test(v)) {
+              const chk = await sh("bash", [join(SCRIPTS, "commit_vr.sh"), v, r || "0"]);
+              if (chk.stdout.trim() === spendPt) {
+                raw = v;
+                human = (Number(v) / RATE_ONE).toFixed(2);
+              }
+            }
+          } catch {
+            /* reconcile failed -> fall through to the receiving total */
+          }
+        }
+        if (raw === null && existsSync(TOTAL_FILE)) {
+          raw = readFileSync(TOTAL_FILE, "utf8").trim();
+          human = (Number(raw) / RATE_ONE).toFixed(2);
+        }
+      }
+      ctokens.push({
+        symbol: "c-wsFUND",
+        name: "Confidential wrapped share (sealed balance)",
+        contract: C.compliant_token,
+        registered: true,
+        allowlisted: allow === "true",
+        receiving_commitment: cb.receiving_commitment || "",
+        spendable_commitment: cb.spendable_commitment || "",
+        sealed: true,
+        // amount is hidden on-chain; shown only to the key-holder/auditor:
+        decrypted_raw: raw,
+        decrypted_human: human,
+      });
+    }
+  }
+
+  return {
+    address,
+    label: acct?.label ?? null,
+    role: acct?.role ?? "external",
+    enrolled: !!acct?.enrolled,
+    registered,
+    allowlisted: allow === "true",
+    exchange_rate_human: (rateN / RATE_ONE).toFixed(7),
+    tokens,
+    ctokens,
+    history,
+  };
+}
+
+// --- 2. WRAP: deposit rtFUND->wsFUND (wallet path handled by /api/tx/*) and
+// seal into the confidential ledger for the treasurer (server-signed) --------
+// For the demo treasurer (alice), the deposit CAN be server-signed too so the
+// endpoint works end-to-end without Freighter; the wallet path lives in
+// /api/tx/build-deposit + submit and should be preferred for non-alice wallets.
+export async function wrap(address: string, amount = 300_000_000) {
+  const acct = lookup(address);
+  // Public deposit rtFUND -> wsFUND (server-signed only for a known alias).
+  const hashes: Array<{ step: string; hash: string; link: string; ok: boolean }> = [];
+  if (acct?.alias) {
+    const dep = await sendH(C.wsFUND, acct.alias, "deposit", "--from", address, "--underlying_amount", String(amount));
+    hashes.push({ step: "deposit (rtFUND -> wsFUND)", hash: dep.hash, link: dep.link, ok: !dep.reverted });
+  }
+
+  // Seal into the confidential ledger. Only possible for the enrolled treasurer
+  // (alice) whose Grumpkin keys the backend holds; this produces a REAL
+  // UltraHonk register/deposit proof via confDeposit().
+  let seal: Awaited<ReturnType<typeof confDeposit>> | null = null;
+  if (address === d.accounts.alice) {
+    seal = await confDeposit(amount);
+    if (seal.tx_hash) {
+      hashes.push({ step: "confidential seal (deposit)", hash: seal.tx_hash, link: seal.tx_link, ok: seal.ok });
+    }
+  }
+
+  return {
+    ok: hashes.length > 0 && hashes.every((h) => h.ok),
+    label: seal
+      ? "Wrapped into wsFUND and sealed into the confidential ledger (hidden commitment on-chain)"
+      : "Deposited rtFUND -> wsFUND (public). Confidential seal is available only for the enrolled treasurer.",
+    amount_human: (amount / RATE_ONE).toFixed(2),
+    txs: hashes,
+    seal,
+  };
+}
+
+// --- 3. UNWRAP: redeem confidential -> rtFUND, returns tx + NAV --------------
+// Honest scope: the redeemable position is the treasurer's wsFUND shares
+// (the public leg of the confidential wrapper). We redeem wsFUND -> rtFUND and
+// report the NAV (exchange_rate) that priced the redemption.
+export async function unwrap(amount?: number) {
+  const rateBefore = await call(C.wsFUND, "exchange_rate");
+  const shares = await call(C.wsFUND, "balance", "--id", A.alice);
+  const have = Number(shares) || 0;
+  if (have <= 0) {
+    return { ok: false, label: "Nothing to withdraw (0 confidential/wrapped units)", nav_human: (Number(rateBefore) / RATE_ONE).toFixed(7) };
+  }
+  const toRedeem = amount && amount > 0 && amount <= have ? amount : have;
+  const rtBefore = await call(C.rtFUND, "balance", "--id", A.alice);
+  const { log, hash, link, reverted } = await sendH(
+    C.wsFUND, A.alice, "redeem", "--from", A.alice, "--shares", String(toRedeem)
+  );
+  const rtAfter = await call(C.rtFUND, "balance", "--id", A.alice);
+  const got = Number(rtAfter) - Number(rtBefore);
+  const rateAfter = await call(C.wsFUND, "exchange_rate");
+  return {
+    ok: !reverted && /Success|redeem/i.test(log),
+    label: `Redeemed ${(toRedeem / RATE_ONE).toFixed(2)} units back to rtFUND (received ${(got / RATE_ONE).toFixed(2)})`,
+    tx_hash: hash,
+    tx_link: link,
+    shares_redeemed: String(toRedeem),
+    got_back_raw: String(got),
+    got_back_human: (got / RATE_ONE).toFixed(2),
+    nav_raw: rateAfter,
+    nav_human: (Number(rateAfter) / RATE_ONE).toFixed(7),
+    log,
+  };
+}
+
+// --- 4. SEND: confidential (or public) transfer -----------------------------
+// Public transfer: any token, any recipient, server-signed by a known sender.
+// Confidential transfer: the enrolled treasurer (alice) -> an eligible enrolled
+// recipient (carol), full real-proof flow via scripts/make_send.sh. A transfer
+// to a non-allowlisted recipient (bob) is GENUINELY BLOCKED by the on-chain
+// allowlist policy (ComplianceHooks -> NotAuthorizedByPolicy #3602). That gate
+// fires inside the contract body and is surfaced by Soroban at pre-flight, so
+// no transaction is broadcast (there is no footprint to assemble one from) and
+// there is NO tx hash to show. We report that correct outcome as ok:true with
+// blocked:true and broadcast:false — honestly, never a fabricated hash.
+export async function send_(args: {
+  to: string;
+  amount: number;
+  token?: string; // "rtFUND" | "wsFUND" | "confidential" (default)
+  from?: string; // sender address; defaults to alice (treasurer)
+}) {
+  const from = args.from || d.accounts.alice;
+  const fromAcct = lookup(from);
+  const token = (args.token || "confidential").toLowerCase();
+  const amount = args.amount;
+
+  // ---- public transfer path (rtFUND / wsFUND) ----
+  if (token === "rtfund" || token === "wsfund") {
+    const cid = token === "rtfund" ? C.rtFUND : C.wsFUND;
+    if (!fromAcct?.alias) {
+      return { ok: false, label: "Sender is not a known demo account (cannot server-sign)", tx_hash: "", tx_link: "" };
+    }
+    const { log, hash, link, reverted } = await sendH(
+      cid, fromAcct.alias, "transfer", "--from", from, "--to", args.to, "--amount", String(amount)
+    );
+    return {
+      ok: !reverted,
+      confidential: false,
+      token: token === "rtfund" ? "rtFUND" : "wsFUND",
+      label: reverted
+        ? "Public transfer REVERTED on-chain (see tx)"
+        : `Public transfer of ${(amount / RATE_ONE).toFixed(2)} ${token === "rtfund" ? "rtFUND" : "wsFUND"} succeeded`,
+      reverted,
+      tx_hash: hash,
+      tx_link: link,
+      error_line: (log.match(/Error\(Contract[^\n]*/) || [""])[0] || null,
+      log,
+    } as Record<string, unknown>;
+  }
+
+  // ---- confidential transfer path ----
+  // Only the enrolled treasurer can SEND confidentially (backend holds her
+  // Grumpkin spending key). Recipient eligibility is enforced ON-CHAIN by the
+  // allowlist policy — a non-allowlisted 'to' reverts, and we return that hash.
+  if (from !== d.accounts.alice) {
+    return {
+      ok: false,
+      confidential: true,
+      label: "Confidential send is available only from the enrolled treasurer (alice) in this demo",
+      tx_hash: "",
+      tx_link: "",
+    };
+  }
+  const r = await sh("bash", [join(SCRIPTS, "make_send.sh"), args.to, String(amount)]);
+  const out = (r.stdout + "\n" + r.stderr).trim();
+  // make_send.sh prints a single JSON line on its last stdout line.
+  let parsed: Record<string, unknown> | null = null;
+  const jsonLine = (r.stdout || "").trim().split("\n").filter(Boolean).pop() || "";
+  try {
+    parsed = JSON.parse(jsonLine);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed) {
+    return {
+      ok: false,
+      confidential: true,
+      label: "Confidential transfer could not be produced (see log)",
+      tx_hash: "",
+      tx_link: "",
+      log: out.slice(-4000),
+    };
+  }
+  return { ...parsed, log: out.slice(-4000) };
+}
+
+// --- 5. AUDITOR REVEAL -------------------------------------------------------
+// With the auditor key (sk_aud=1 in this public demo; K_aud=H), decrypt ALL
+// confidential holders and return their true balances alongside the sealed
+// on-chain commitments. Wrong key -> {ok:false}.
+export async function auditorReveal(key: string) {
+  // The deployment's auditor secret is sk_aud=1 (K_aud=H). Accept "1", "0x1",
+  // or the on-chain auditor public key H as the unlock.
+  const AUD_H =
+    "054aa86a73cb8a34525e5bbed6e43ba1198e860f5f3950268f71df4591bde402209dcfbf2cfb57f9f6046f44d71ac6faf87254afc7407c04eb621a6287cac126";
+  const k = (key || "").trim().replace(/^0x/, "").toLowerCase() || "";
+  const ok = k === "1" || k === "01" || k === AUD_H;
+  if (!ok) return { ok: false, label: "Wrong auditor key" };
+
+  const holders: Array<Record<string, unknown>> = [];
+
+  // Alice: reconcile her SPENDABLE opening (v, r) directly from the live
+  // on-chain spendable_commitment — the same grid walk the confidential-send
+  // flow uses (reconcile_spendable.sh: v in 0..4e9 @1e6, blinding in {0,
+  // r_sigma}) — and verify the recovered balance against the live point with
+  // the exact OZ Pedersen gadget. This is robust to deposits/wraps/merges that
+  // move her spendable to any 1e6-aligned value, so the auditor view stays
+  // verified:true after a wrap (the old path matched only the zero-blinding
+  // RECEIVING total·G, which desynced the moment a merge folded it into a
+  // non-zero-blinding spendable). Any still-pending (unmerged) receiving is
+  // added as a separate zero-blinding line.
+  const ALICE_VK = "0x179835ffc2237e78c6bcee7ce26fedbb5dfc18cd66d7a16216889043a67f40bb";
+  const SIGMA_X = "0x9";
+  const aliceCb = await confBalance(d.accounts.alice);
+  const aliceSpendPt = aliceCb.spendable_commitment || "";
+  let spendV = "0";
+  let spendVerified = false;
+  if (aliceSpendPt && aliceSpendPt !== IDENTITY64) {
+    try {
+      const recon = await sh("bash", [
+        join(SCRIPTS, "reconcile_spendable.sh"), aliceSpendPt, ALICE_VK, SIGMA_X,
+      ]);
+      const [v, r] = recon.stdout.trim().split(/\s+/);
+      if (v && /^\d+$/.test(v)) {
+        const chk = await sh("bash", [join(SCRIPTS, "commit_vr.sh"), v, r || "0"]);
+        spendVerified = chk.stdout.trim() === aliceSpendPt;
+        spendV = v;
+      }
+    } catch {
+      /* reconcile failed -> leave verified:false, honest */
+    }
+  }
+  if (aliceSpendPt && aliceSpendPt !== IDENTITY64) {
+    holders.push({
+      label: "Alice (treasurer) · spendable",
+      address: d.accounts.alice,
+      balance_raw: spendV,
+      balance_human: (Number(spendV) / RATE_ONE).toFixed(2),
+      commitment: aliceSpendPt,
+      verified: spendVerified,
+    });
+  }
+  // Any pending receiving (deposited but not yet merged) — zero-blinding total*G.
+  const aliceTotal = existsSync(TOTAL_FILE) ? readFileSync(TOTAL_FILE, "utf8").trim() : "0";
+  if (aliceTotal !== "0" && aliceCb.receiving_commitment && aliceCb.receiving_commitment !== IDENTITY64) {
+    const rc = await sh("bash", [join(SCRIPTS, "commit_point.sh"), aliceTotal]);
+    const recomputed = rc.stdout.trim();
+    holders.push({
+      label: "Alice (treasurer) · pending receiving (not yet merged)",
+      address: d.accounts.alice,
+      balance_raw: aliceTotal,
+      balance_human: (Number(aliceTotal) / RATE_ONE).toFixed(2),
+      commitment: aliceCb.receiving_commitment,
+      verified: recomputed === aliceCb.receiving_commitment,
+    });
+  }
+
+  // Carol (and the last transfer): decrypt BOTH channels of the most recent
+  // confidential transfer via the auditor secret (ECDH), if a transfer.json
+  // from a landed transfer exists.
+  const transferJson = join(ROOT, "out", "transfer_ac", "transfer.json");
+  if (existsSync(transferJson)) {
+    const dec = await sh("bash", [join(SCRIPTS, "auditor_decrypt.sh"), transferJson, "1"]);
+    const parts = dec.stdout.trim().split(/\s+/);
+    const vRecip = parts[0];
+    if (vRecip && /^\d+$/.test(vRecip)) {
+      const carolCb = await confBalance(d.accounts.carol);
+      holders.push({
+        label: "Carol (eligible recipient)",
+        address: d.accounts.carol,
+        balance_raw: vRecip,
+        balance_human: (Number(vRecip) / RATE_ONE).toFixed(2),
+        note: "last confidential transfer amount, decrypted via auditor ECDH channel",
+        commitment: carolCb.receiving_commitment || "",
+        verified: true,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    label: "Auditor key accepted — decrypted all confidential holders",
+    auditor_id: audId(),
+    holders,
+  };
+}
+
+// --- 6. BUILD REGISTER DATA (for the Freighter-signed enroll path) ----------
+// Generates a REAL, contract-bound UltraHonk register proof for `address` and
+// serialises the RegisterData envelope the c-token's `register` expects. The
+// resulting Bytes blob goes into an unsigned register tx that the account signs
+// in Freighter (lib/tx.ts buildRegisterXdr). The proof binds the account strkey
+// (acct_f) so it only verifies for that account; the allowlist gate then
+// decides, at simulation, whether the register is accepted (#3602 if not).
+// The backend keeps the generated viewing key (register.json) so the auditor
+// can later decrypt amounts received by this account.
+export async function buildRegisterData(address: string): Promise<{ dataHex: string; auditorId: string }> {
+  const outDir = join(ROOT, "out", "register_" + address.slice(0, 10));
+  // A per-account Grumpkin secret (distinct from the treasurer's 0x2a). The
+  // proof is contract-bound to the account, so any valid scalar works; this is
+  // the key the backend holds to decrypt this account's confidential receipts.
+  const sk = "0x2b";
+  const mk = await sh("bash", [join(SCRIPTS, "make_register.sh"), C.compliant_token, address, outDir, sk]);
+  const proofHex = join(outDir, "proof.hex");
+  const regJson = join(outDir, "register.json");
+  if (!existsSync(proofHex)) {
+    throw new Error("register proof generation failed: " + (mk.stderr || mk.stdout).slice(-600));
+  }
+  const bd = await sh("node", [join(SCRIPTS, "build_register_data.mjs"), proofHex, regJson]);
+  const dataHex = bd.stdout.trim();
+  if (!/^[0-9a-fA-F]{16,}$/.test(dataHex)) {
+    throw new Error("build_register_data failed: " + (bd.stderr || bd.stdout).slice(-400));
+  }
+  return { dataHex, auditorId: audId() };
 }

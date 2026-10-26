@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useFreighter } from "@/components/useFreighter";
 
 // =============================================================================
@@ -28,7 +29,7 @@ const CONTRACTS: {
     name: "rtFUND",
     id: "CDTZL6HUYZMC2FVX5QNSY5YWF2ALELI6IRZKJ4OHLJ4B5P5NWBXBUZJU",
     origin: "ours",
-    role: "Mock rebasing RWA (SEP-41). Balances grow via an admin accrue(bps) — BENJI-like interest paid as new shares.",
+    role: "Mock rebasing RWA (SEP-41). Balances grow via an admin accrue(bps). BENJI-like interest paid as new shares.",
   },
   {
     name: "wsFUND",
@@ -81,12 +82,72 @@ const TOC = [
 
 export default function Docs() {
   const { wallet, connect } = useFreighter();
+  // Active-section highlight for the left TOC. JS-driven (Safari-safe) via
+  // IntersectionObserver; respects prefers-reduced-motion by simply not
+  // animating — the highlight itself is a plain class swap.
+  const [active, setActive] = useState<string>(TOC[0][0]);
+  const [tocOpen, setTocOpen] = useState(false);
+
+  useEffect(() => {
+    const ids = TOC.map(([id]) => id);
+    const nodes = ids
+      .map((id) => document.getElementById(id))
+      .filter((n): n is HTMLElement => Boolean(n));
+    if (nodes.length === 0) return;
+
+    // Track visibility ratios; the top-most visible section wins.
+    const ratios = new Map<string, number>();
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          ratios.set(e.target.id, e.isIntersecting ? e.intersectionRatio : 0);
+        }
+        let best: string | null = null;
+        for (const id of ids) {
+          if ((ratios.get(id) ?? 0) > 0) {
+            best = id;
+            break;
+          }
+        }
+        if (best) setActive(best);
+      },
+      { rootMargin: "-20% 0px -65% 0px", threshold: [0, 0.25, 0.5, 1] }
+    );
+    nodes.forEach((n) => io.observe(n));
+    return () => io.disconnect();
+  }, []);
+
+  const toc = (
+    <nav className="doc__toc" aria-label="Table of contents">
+      <button
+        type="button"
+        className="doc__toc-title"
+        aria-expanded={tocOpen}
+        onClick={() => setTocOpen((v) => !v)}
+      >
+        Contents
+      </button>
+      <div className={`doc__toc-list${tocOpen ? " is-open" : ""}`}>
+        {TOC.map(([id, label]) => (
+          <a
+            key={id}
+            href={`#${id}`}
+            className={active === id ? "is-active" : undefined}
+            aria-current={active === id ? "true" : undefined}
+            onClick={() => setTocOpen(false)}
+          >
+            {label}
+          </a>
+        ))}
+      </div>
+    </nav>
+  );
 
   return (
     <main className="doc">
       <nav className="doc__bar">
         <Link className="doc__home" href="/">
-          <Image src="/brand/mark-cream.png" alt="Sagittaire — back to home" width={30} height={30} />
+          <Image src="/brand/mark-cream.png" alt="Sagittaire, back to home" width={30} height={30} />
           <span>Sagittaire</span>
         </Link>
         {wallet.address ? (
@@ -101,6 +162,7 @@ export default function Docs() {
       </nav>
 
       <div className="doc__layout">
+        {toc}
         <article className="doc__sheet doc__sheet--long">
           <p className="doc__eyebrow">Protocol documentation</p>
           <h1 className="doc__h1">A treasury that earns in the open and holds in private.</h1>
@@ -116,12 +178,12 @@ export default function Docs() {
             <span className="doc__num">§1 · The problem</span>
             <h2 className="doc__h2">Every balance on Stellar is public.</h2>
             <p>
-              Tokenized real-world assets — treasury funds, money-market shares, tokenized bills — are
-              arriving on Stellar. But a Stellar balance is readable by anyone with a block explorer.
-              For a tokenized fund that means a company&apos;s entire treasury position, its size and its
+              Tokenized real-world assets are arriving on Stellar: treasury funds, money-market shares,
+              tokenized bills. But a Stellar balance is readable by anyone with a block explorer. For a
+              tokenized fund that means a company&apos;s entire treasury position, its size and its
               counterparties, is in the clear. No institution runs its balance sheet on a public
-              spreadsheet, so the thing that makes the ledger trustworthy is exactly what keeps serious
-              capital off it.
+              spreadsheet, so the property that makes the ledger trustworthy is the same property that
+              keeps serious capital off it.
             </p>
             <p>
               The fix cannot be &quot;hide everything.&quot; A fund still has to pay yield in public, pass
@@ -137,14 +199,14 @@ export default function Docs() {
             <span className="doc__num">§2 · The idea</span>
             <h2 className="doc__h2">Slip a non-rebasing share token in front of the rebasing fund.</h2>
             <p>
-              OpenZeppelin ships a complete confidential-token stack for Stellar — encrypted balances,
+              OpenZeppelin ships a complete confidential-token stack for Stellar: encrypted balances,
               UltraHonk proofs, an auditor, freeze and clawback, a factory. But its confidential token
               assumes a <strong>non-rebasing underlying</strong>: a token whose balances never change on
               their own, with no fee-on-transfer and a deterministic revert.
             </p>
             <p>
               Yield-bearing RWAs break that assumption. Funds like Franklin Templeton&apos;s BENJI{" "}
-              <strong>rebase</strong> — interest is paid as new shares, so every holder&apos;s balance
+              <strong>rebase</strong>: interest is paid as new shares, so every holder&apos;s balance
               grows on its own. You cannot wrap a rebasing token directly without violating the invariant
               the confidential token relies on.
             </p>
@@ -158,9 +220,9 @@ export default function Docs() {
               <div className="doc__insight-k">The invariant, kept</div>
               <p>
                 wsFUND represents a <strong>fixed share count</strong>. When interest accrues, the number
-                of shares you hold does not move — only how much fund each share is worth. So the token
-                the confidential layer wraps is genuinely non-rebasing, and OpenZeppelin&apos;s assumption
-                holds exactly. The limitation is lifted by construction, not by patching OZ.
+                of shares you hold does not move. Only how much fund each share is worth changes. So the
+                token the confidential layer wraps is genuinely non-rebasing, and OpenZeppelin&apos;s
+                assumption holds exactly. The limitation is lifted by construction, not by patching OZ.
               </p>
             </div>
           </section>
@@ -172,14 +234,14 @@ export default function Docs() {
             <span className="doc__num">§3 · Why yield stays hidden</span>
             <h2 className="doc__h2">The encrypted number is a share count. Yield is a public rate.</h2>
             <p>
-              The value sealed inside the confidential token is a <strong>stable share count</strong> —
-              it only changes when you deposit, transfer, or redeem. It does not move when the fund earns
+              The value sealed inside the confidential token is a <strong>stable share count</strong>.
+              It only changes when you deposit, transfer, or redeem. It does not move when the fund earns
               interest.
             </p>
             <p>
               Yield surfaces instead as a <strong>public exchange rate</strong>: how much rtFUND one
               wsFUND share is worth. When the issuer calls <code>accrue()</code> on rtFUND, the wrapper&apos;s
-              exchange rate rises for everyone. Your hidden share count is unchanged — but the same shares
+              exchange rate rises for everyone. Your hidden share count is unchanged, yet the same shares
               now redeem for more fund than you deposited. The private part (how many shares) and the
               public part (what a share is worth) are cleanly separated, so confidentiality and yield
               compose without fighting each other.
@@ -194,7 +256,7 @@ export default function Docs() {
             <h2 className="doc__h2">Hidden balances, provable operations, a permissioned reveal.</h2>
             <p>
               On the ledger, a holder&apos;s confidential balance is stored only as a{" "}
-              <strong>Pedersen commitment</strong> on the Grumpkin curve — there is no plaintext amount
+              <strong>Pedersen commitment</strong> on the Grumpkin curve. There is no plaintext amount
               anywhere in storage. Every state-changing operation carries an <strong>UltraHonk proof</strong>{" "}
               that the hidden arithmetic is valid, checked on-chain by the verifier contract against a set
               of pinned verification keys (one per operation: register, withdraw, transfer, and so on).
@@ -208,17 +270,17 @@ export default function Docs() {
             <p>
               <strong>An auditor can still see.</strong> Each operation attaches an ECDH ciphertext to the
               registered auditor key, so a permissioned auditor can recover a holder&apos;s true balance and
-              the amount of a transfer — selective disclosure for a regulator, without weakening privacy
-              against everyone else.
+              the amount of a transfer. This gives a regulator selective disclosure without weakening
+              privacy against everyone else.
             </p>
 
             <div className="doc__insight">
               <div className="doc__insight-k">Be precise: confidential, not anonymous</div>
               <p>
-                The UltraHonk proofs used here are the <strong>non-ZK</strong> variant — they prove the
+                The UltraHonk proofs used here are the <strong>non-ZK</strong> variant. They prove the
                 operation is valid but are not witness-hiding. Balances are hidden as commitments; the
-                operations are not anonymous. This matches OpenZeppelin&apos;s own caveat and is a
-                deliberate, honest scope.
+                operations are not anonymous. This matches OpenZeppelin&apos;s own caveat and is the
+                scope we claim.
               </p>
             </div>
           </section>
@@ -245,7 +307,7 @@ export default function Docs() {
                   <p>
                     The holder deposits rtFUND into the wrapper, receiving non-rebasing wsFUND shares,
                     then deposits those shares into the confidential token. Their on-ledger balance becomes
-                    a Pedersen commitment — hidden.
+                    a Pedersen commitment, now hidden.
                   </p>
                 </div>
               </div>
@@ -273,7 +335,7 @@ export default function Docs() {
                   <h3>Auditor decrypt</h3>
                   <p>
                     Using the registered auditor key, the auditor recovers the true transferred amount and
-                    balance from the ECDH ciphertext — the regulator&apos;s view.
+                    balance from the ECDH ciphertext. This is the regulator&apos;s view.
                   </p>
                 </div>
               </div>
@@ -282,7 +344,7 @@ export default function Docs() {
                   <h3>Eligibility reject</h3>
                   <p>
                     A transfer or register aimed at a non-allowlisted address is rejected on-chain by the
-                    policy — proof that eligibility is enforced by the contract, not the interface.
+                    policy. Eligibility is enforced by the contract, not the interface.
                   </p>
                 </div>
               </div>
@@ -291,8 +353,8 @@ export default function Docs() {
                   <h3>Redeem with yield</h3>
                   <p>
                     The holder redeems the same hidden share count back through the wrapper and receives{" "}
-                    <strong>more rtFUND than they deposited</strong> — private yield realized, the amount
-                    still never exposed on the ledger.
+                    <strong>more rtFUND than they deposited</strong>. Private yield is realized, and the
+                    amount is still never exposed on the ledger.
                   </p>
                 </div>
               </div>
@@ -360,8 +422,8 @@ export default function Docs() {
               </div>
             </div>
             <p className="doc__diagram-note">
-              The encrypted amount is a share count, so it never has to change when interest accrues —
-              which is exactly why a rebasing fund can become confidential.
+              The encrypted amount is a share count, so it never has to change when interest accrues.
+              That is why a rebasing fund can become confidential.
             </p>
           </section>
 
@@ -384,7 +446,7 @@ export default function Docs() {
               <li>
                 <strong>Demo auditor key.</strong> The auditor key in this deployment is a publicly-known
                 value (auditor_id 0, K = H), chosen so the reveal genuinely decrypts the transfer
-                ciphertext. Its disclosure is therefore publicly reproducible — a real deployment would
+                ciphertext. Its disclosure is therefore publicly reproducible. A real deployment would
                 use a privately-held auditor key.
               </li>
             </ul>
@@ -448,15 +510,6 @@ export default function Docs() {
             </div>
           </section>
         </article>
-
-        <aside className="doc__toc" aria-label="Table of contents">
-          <div className="doc__toc-title">Contents</div>
-          {TOC.map(([id, label]) => (
-            <a key={id} href={`#${id}`}>
-              {label}
-            </a>
-          ))}
-        </aside>
       </div>
     </main>
   );

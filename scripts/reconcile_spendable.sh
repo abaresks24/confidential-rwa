@@ -29,7 +29,14 @@ ROOT="$(cd "$HERE/.." && pwd)"
 REF_CIRCUITS="$ROOT/reference/stellar-contracts/packages/confidential/circuits"
 
 ONCHAIN="${1:?usage: reconcile_spendable.sh <onchain> <vk> <sigma> [step]}"
-VK="${2:?}"; SIGMA="${3:?}"; STEP="${4:-100000000}"
+# STEP is the plaintext-balance granularity the grid walks. It MUST divide every
+# balance this e2e can produce. Confidential deposits/transfers here are 1e6-
+# aligned (the genesis spendable is 899_000_000 = 899 * 1e6, transfers net to
+# e.g. 1_849_000_000 = 1849 * 1e6), NOT 1e8-aligned, so the step is 1e6. Paired
+# with prep_reconcile's N=2001 this sweeps v in {0, 1e6, ..., 2_000_000_000} at
+# both deterministic blindings in a single sub-second circuit execution.
+# (prep_reconcile sweeps v in {0, 1e6, ..., 4_000_000_000} with N=4001.)
+VK="${2:?}"; SIGMA="${3:?}"; STEP="${4:-1000000}"
 ONCHAIN="${ONCHAIN#0x}"
 
 IDENTITY64="0000000000000000000000000000000000000000000000000000000000000000"

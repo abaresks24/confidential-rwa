@@ -55,6 +55,27 @@ add_key "crwa-carol"    "${SK_CAROL:-}"
 add_key "crwa-bob"      "${SK_BOB:-}"
 add_key "crwa-feepayer" "${SK_FEEPAYER:-}"
 
+# --- stage genesis confidential proof artifacts ------------------------------
+# The confidential deposit/auditor/send flows read + write opening state under
+# /app/out (register_alice/conf_total, transfer_ac/transfer.json,
+# transfer_state/*). The image ships these at /app/seed/out with values that
+# match the LIVE on-chain commitments. Copy each file in only if it is not
+# already present, so a long-running container's self-updated state is NEVER
+# clobbered on restart — we only backfill a fresh/empty /app/out.
+if [ -d /app/seed/out ]; then
+  echo "==> Staging genesis confidential artifacts into /app/out (backfill only)"
+  ( cd /app/seed/out && find . -type f -print0 | while IFS= read -r -d '' f; do
+      dest="/app/out/${f#./}"
+      if [ ! -e "$dest" ]; then
+        mkdir -p "$(dirname "$dest")"
+        cp "$f" "$dest"
+        echo "    + ${f#./}"
+      else
+        echo "    = ${f#./} (already present, kept)"
+      fi
+    done )
+fi
+
 # --- server ------------------------------------------------------------------
 export PORT="${PORT:-8080}"
 export HOSTNAME="0.0.0.0"

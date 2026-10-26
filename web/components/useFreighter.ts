@@ -39,6 +39,14 @@ export function useFreighter() {
     }
   }, []);
 
+  // Clear the dapp's own connection state. Freighter has no programmatic
+  // "forget" for a dapp, so this drops the local session: the UI returns to
+  // "Connect wallet", and reconnecting re-reads whichever account is currently
+  // selected in Freighter (switch accounts in the extension, then reconnect).
+  const disconnect = useCallback(() => {
+    setW({ address: null, installed: true, connecting: false, error: null });
+  }, []);
+
   const sign = useCallback(
     async (xdr: string, networkPassphrase: string) => {
       const res = await signTransaction(xdr, { networkPassphrase });
@@ -48,5 +56,5 @@ export function useFreighter() {
     []
   );
 
-  return { wallet: w, connect, sign };
+  return { wallet: w, connect, disconnect, sign };
 }

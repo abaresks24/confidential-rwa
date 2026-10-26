@@ -1,25 +1,24 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useFreighter } from "@/components/useFreighter";
 import { api } from "@/lib/api";
 
 // =============================================================================
-// SAGITTAIRE — the live treasurer demo, rebuilt as calm editorial sections.
+// SAGITTAIRE — the product. No prose, no explanations. A top tab bandeau swaps
+// focused holder screens: Portfolio, Wrap, Unwrap, Send. Every screen is wired
+// to the LIVE backend (confidential-rwa-api on Fly) against Stellar testnet:
+//   Portfolio -> GET  /api/portfolio?address=G...   (real balances + history)
+//   Wrap      -> POST /api/wrap   {address, amount}  (deposit + confidential seal)
+//   Unwrap    -> POST /api/unwrap {amount}           (redeem to rtFUND, with NAV)
+//   Send      -> POST /api/send   {to, token, amount, from}
 //
-// Every button calls the REAL backend (NEXT_PUBLIC_BACKEND_URL): /api/config +
-// /api/state polling, the /api/step/* on-chain actions, and the Freighter-signed
-// /api/tx/* deposit path. None of that wiring is touched here — only the layout
-// and copy. The page is organised as plainly-titled sections, each with a short
-// explanation and the live on-chain result.
-//
-// Scroll choreography (section reveal + paper parallax) is driven in JS via a
-// rAF-throttled scroll/IntersectionObserver so it works in Safari — NOT CSS
-// scroll-timeline. prefers-reduced-motion skips it and shows content directly.
+// The Auditor is NOT a holder tab. It is a privileged key-holder role reached by
+// a quiet link in the top bar. It takes an auditor key and POSTs it to
+// /api/auditor/reveal to decrypt EVERY confidential holder. No wallet needed.
 // =============================================================================
 
 const RATE_ONE = 10_000_000;
-const GITHUB = "https://github.com/abaresks24/confidential-rwa";
 
 type Cfg = {
   network: string;
@@ -27,214 +26,156 @@ type Cfg = {
   contracts: Record<string, string>;
   accounts: Record<string, string>;
   auditor_id: string;
-  ours: string[];
-  oz_as_is: string[];
-  note: string;
   explorer: string;
 };
 
-type State = {
-  exchange_rate: string;
+// ---- live response shapes (from lib/chain.ts) ------------------------------
+type Tx = { hash: string; successful: boolean; created_at: string; operation_count: number; link: string };
+type Token = { symbol: string; name: string; raw: string; human: string; underlying_human?: string; contract: string };
+type CToken = {
+  symbol: string;
+  name: string;
+  contract: string;
+  registered: boolean;
+  allowlisted: boolean;
+  receiving_commitment: string;
+  spendable_commitment: string;
+  sealed: boolean;
+  decrypted_raw: string | null;
+  decrypted_human: string | null;
+};
+type Portfolio = {
+  address: string;
+  label: string | null;
+  role: string;
+  enrolled: boolean;
+  registered: boolean;
+  allowlisted: boolean;
   exchange_rate_human: string;
-  total_underlying: string;
-  alice: { wsFUND: string; rtFUND: string; allowlisted: string };
-  bob: { wsFUND: string; rtFUND: string; allowlisted: string };
-  confidential: {
-    registered: boolean;
-    receiving_commitment: string;
-    spendable_commitment: string;
-    spending_public_key: string;
-    is_identity: boolean;
-    cumulative_total: string;
-  };
-  auditor_key: string;
+  tokens: Token[];
+  ctokens: CToken[];
+  history: Tx[];
+  error?: string;
 };
 
-type StepResult = Record<string, unknown> & { ok?: boolean; label?: string; log?: string };
+type TxStep = { step: string; hash: string; link: string; ok: boolean };
 
-function short(s: string, n = 10) {
-  if (!s) return "—";
+type TabKey = "portfolio" | "wrap" | "unwrap" | "send";
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "portfolio", label: "Portfolio" },
+  { key: "wrap", label: "Wrap" },
+  { key: "unwrap", label: "Unwrap" },
+  { key: "send", label: "Send" },
+];
+
+type AuditorHolder = {
+  label?: string;
+  address?: string;
+  balance_human?: string;
+  commitment?: string;
+  verified?: boolean;
+  note?: string;
+};
+type AuditorReveal = { ok?: boolean; label?: string; holders?: AuditorHolder[] };
+
+function short(s: string | undefined, n = 10) {
+  if (!s) return "";
   return s.length <= n * 2 ? s : `${s.slice(0, n)}…${s.slice(-6)}`;
 }
-function units(raw: string | undefined) {
-  if (!raw) return "0.00";
-  return (Number(raw) / RATE_ONE).toFixed(2);
+function when(iso: string) {
+  try {
+    return new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return iso;
+  }
 }
 
+// ---- a demo identity the viewer can inspect --------------------------------
+// Freighter carries a Stellar ed25519 key for signing. The confidential view
+// keys (Grumpkin) live with the enrolled demo accounts, so the sealed c-token
+// balance is legible only for Alice and Carol. The viewer picks whose live
+// position to inspect; a connected wallet shows its own public balances.
+type Who = { key: string; label: string; address: string; sub: string };
+
 export default function Page() {
-  const { wallet, connect, sign } = useFreighter();
+  const { wallet, connect, disconnect, sign } = useFreighter();
   const [cfg, setCfg] = useState<Cfg | null>(null);
-  const [st, setSt] = useState<State | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [auditorView, setAuditorView] = useState(false);
-  const [results, setResults] = useState<Record<string, StepResult>>({});
-  const [auditData, setAuditData] = useState<StepResult | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  // ---- live backend wiring (unchanged) ------------------------------------
-  const refresh = useCallback(async () => {
-    try {
-      const [c, s] = await Promise.all([
-        cfg ?? fetch(api("/api/config")).then((r) => r.json()),
-        fetch(api("/api/state")).then((r) => r.json()),
-      ]);
-      if (!cfg) setCfg(c);
-      if (s?.error) {
-        setLoadError(String(s.error));
-      } else {
-        setSt(s);
-        setLoadError(null);
-      }
-    } catch (e) {
-      setLoadError(String((e as Error)?.message || e));
-    }
-  }, [cfg]);
+  const [tab, setTab] = useState<TabKey>("portfolio");
+  const [view, setView] = useState<"product" | "auditor">("product");
 
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 8000);
-    return () => clearInterval(t);
-  }, [refresh]);
-
-  const step = useCallback(
-    async (key: string, url: string, body?: unknown) => {
-      setBusy(key);
-      try {
-        const r = await fetch(api(url), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body ?? {}),
-        }).then((x) => x.json());
-        setResults((p) => ({ ...p, [key]: r }));
-        if (key === "audit") setAuditData(r);
-        await refresh();
-        return r;
-      } catch (e) {
-        const r = { ok: false, label: "Request failed", log: String((e as Error)?.message || e) };
-        setResults((p) => ({ ...p, [key]: r }));
-        return r;
-      } finally {
-        setBusy(null);
-      }
-    },
-    [refresh]
-  );
-
-  // Freighter-signed deposit: build XDR server-side, sign in wallet, submit.
-  const walletDeposit = useCallback(async () => {
-    if (!wallet.address || !cfg) return;
-    setBusy("wallet-deposit");
-    try {
-      const built = await fetch(api("/api/tx/build-deposit"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address: wallet.address, amount: "300000000" }),
-      }).then((r) => r.json());
-      if (built.error) {
-        setResults((p) => ({ ...p, "wallet-deposit": { ok: false, label: "Could not build transaction", log: built.error } }));
-        return;
-      }
-      const signed = await sign(built.xdr, cfg.passphrase);
-      const sub = await fetch(api("/api/tx/submit"), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ signedXdr: signed }),
-      }).then((r) => r.json());
-      setResults((p) => ({
-        ...p,
-        "wallet-deposit": {
-          ok: !!sub.ok,
-          label: sub.ok
-            ? "Deposit signed in your wallet and confirmed on-chain"
-            : `Deposit submitted — network status: ${sub.status}`,
-          log: `tx hash: ${sub.hash ?? "—"}\nstatus: ${sub.status}\n${sub.error ?? ""}`,
-        },
-      }));
-      await refresh();
-    } catch (e) {
-      setResults((p) => ({ ...p, "wallet-deposit": { ok: false, label: "Wallet signing cancelled or failed", log: String((e as Error)?.message || e) } }));
-    } finally {
-      setBusy(null);
-    }
-  }, [wallet.address, cfg, sign, refresh]);
-
-  // ---- derived state -------------------------------------------------------
-  const conf = st?.confidential;
-  const hiddenCommitted = !!conf && !conf.is_identity;
-  const loading = !st && !loadError;
-
-  const depositDone = !!(results["deposit"]?.ok || results["wallet-deposit"]?.ok);
-  const accrueDone = !!results["accrue"]?.ok;
-  const rejectDone = !!results["reject"]?.ok;
-  const sealDone = hiddenCommitted || !!results["conf"]?.ok;
-  const auditDone = !!auditData?.ok;
-  const redeemDone = !!results["redeem"]?.ok;
-
-  // ---- scroll choreography (Safari-safe, reduced-motion aware) -------------
-  const rootRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    const reduce =
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-    const secs = Array.from(root.querySelectorAll<HTMLElement>(".app__sec"));
-    if (reduce) {
-      secs.forEach((s) => s.classList.add("is-in"));
-      return;
-    }
-
-    // Reveal each section as it enters the viewport.
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) {
-            e.target.classList.add("is-in");
-            io.unobserve(e.target);
-          }
-        }
-      },
-      { rootMargin: "0px 0px -12% 0px", threshold: 0.12 }
-    );
-    secs.forEach((s) => io.observe(s));
-
-    // Gentle paper parallax as the document scrolls.
-    let raf = 0;
-    const update = () => {
-      raf = 0;
-      root.style.setProperty("--bgY", `${(window.scrollY * 0.18).toFixed(1)}px`);
-    };
-    const onScroll = () => {
-      if (!raf) raf = requestAnimationFrame(update);
-    };
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    return () => {
-      io.disconnect();
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
+    fetch(api("/api/config")).then((r) => r.json()).then(setCfg).catch(() => {});
   }, []);
 
-  return (
-    <div className="app" ref={rootRef}>
-      <div className="app__paper" aria-hidden="true" />
-      <div className="app__wash" aria-hidden="true" />
+  // The set of inspectable identities: the connected wallet (if any) plus the
+  // enrolled demo accounts whose confidential position is fully legible.
+  const whoList = useMemo<Who[]>(() => {
+    const list: Who[] = [];
+    if (wallet.address) list.push({ key: "wallet", label: "Your wallet", address: wallet.address, sub: "connected" });
+    return list;
+  }, [wallet.address]);
 
-      {/* Top bar — black centaur home link + network + connect/wallet. */}
-      <nav className="app__bar">
-        <Link className="app__home" href="/" aria-label="Sagittaire — home">
-          <img className="app__bar-mark" src="/brand/centaur-cream.svg" alt="" width={28} height={33} />
-          <span className="app__bar-word">Sagittaire</span>
+  const [whoKey, setWhoKey] = useState<string>("wallet");
+  // Default to the connected wallet the moment it appears.
+  useEffect(() => {
+    if (wallet.address) setWhoKey("wallet");
+  }, [wallet.address]);
+  const active = whoList.find((w) => w.key === whoKey) || whoList[0] || null;
+
+  // ---- entrance motion (JS-driven, Safari-safe, reduced-motion aware) ------
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) { el.style.opacity = "1"; el.style.transform = "none"; return; }
+    el.style.opacity = "0";
+    el.style.transform = "translateY(14px)";
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        el.style.transition = "opacity 420ms cubic-bezier(0.22,0.61,0.36,1), transform 420ms cubic-bezier(0.22,0.61,0.36,1)";
+        el.style.opacity = "1";
+        el.style.transform = "none";
+      });
+    });
+    return () => { cancelAnimationFrame(raf1); cancelAnimationFrame(raf2); };
+  }, [tab, view]);
+
+  const explorerC = cfg?.explorer || "https://stellar.expert/explorer/testnet/contract/";
+
+  return (
+    <div className="pr">
+      <nav className="pr__bar">
+        <Link className="pr__home" href="/" aria-label="Sagittaire home" onClick={() => setView("product")}>
+          <img className="pr__mark" src="/brand/centaur-ink.svg" alt="" width={28} height={33} />
+          <span className="pr__word">Sagittaire</span>
         </Link>
-        <div className="app__bar-actions">
+
+        {view === "product" ? (
+          <div className="pr__tabs" role="tablist" aria-label="Holder sections">
+            {TABS.map((t) => (
+              <button key={t.key} role="tab" aria-selected={tab === t.key}
+                className={`pr__tab ${tab === t.key ? "is-active" : ""}`} onClick={() => setTab(t.key)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="pr__tabs" aria-hidden />
+        )}
+
+        <div className="pr__bar-actions">
+          <button className={`pr__auditor-link ${view === "auditor" ? "is-active" : ""}`}
+            onClick={() => setView((v) => (v === "auditor" ? "product" : "auditor"))} aria-pressed={view === "auditor"}>
+            Auditor
+          </button>
           {wallet.address ? (
-            <span className="app__wallet" title={wallet.address}>
+            <button className="pr__wallet pr__wallet--btn" title="Click to disconnect" onClick={disconnect}>
+              <span className="pr__wallet-dot" aria-hidden />
               {short(wallet.address, 6)}
-            </span>
+              <span className="pr__wallet-x" aria-hidden>✕</span>
+            </button>
           ) : (
             <button className="primary" onClick={connect} disabled={wallet.connecting}>
               {wallet.connecting ? <span className="spinner" /> : "Connect wallet"}
@@ -243,406 +184,714 @@ export default function Page() {
         </div>
       </nav>
 
-      <div className="app__doc">
-        {/* MASTHEAD */}
-        <header className="app__masthead">
-          <span className="app__eyebrow">Confidential Treasury · Stellar</span>
-          <h1 className="app__title">A treasury that keeps earning, with the amount sealed.</h1>
-          <p className="app__lede">
-            Idle cash goes into a tokenized money-market fund. It earns interest like any fund, but the size of the
-            position is a sealed figure on the public ledger — unreadable to the world, yet provable to a permissioned
-            auditor. Every step below calls a live contract on Stellar {cfg?.network ?? "testnet"}; nothing is mocked.
-          </p>
+      {view === "product" && (
+        <div className="pr__tabs pr__tabs--mobile" role="tablist" aria-label="Holder sections">
+          {TABS.map((t) => (
+            <button key={t.key} role="tab" aria-selected={tab === t.key}
+              className={`pr__tab ${tab === t.key ? "is-active" : ""}`} onClick={() => setTab(t.key)}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
 
-          {wallet.error && (
-            <div className="app__banner" role="alert">
-              {wallet.error} Install Freighter from freighter.app, or use the demo-treasurer actions below — no wallet
-              needed.
-            </div>
+      <main className="pr__main">
+        {wallet.error && (
+          <div className="pr__alerts">
+            <div className="pr__banner" role="alert">{wallet.error} Install Freighter from freighter.app.</div>
+          </div>
+        )}
+
+        <div className="pr__panel" ref={panelRef} key={view === "auditor" ? "auditor" : tab}>
+          {view === "auditor" ? (
+            <AuditorView />
+          ) : (
+            <>
+              {tab === "portfolio" && (
+                <PortfolioScreen whoList={whoList} whoKey={whoKey} setWhoKey={setWhoKey}
+                  active={active} explorerC={explorerC} onConnect={connect} connecting={wallet.connecting}
+                  sign={sign} passphrase={cfg?.passphrase} walletAddress={wallet.address} />
+              )}
+              {tab === "wrap" && <WrapScreen active={active} sign={sign} passphrase={cfg?.passphrase} walletAddress={wallet.address} />}
+              {tab === "unwrap" && <UnwrapScreen cfg={cfg} />}
+              {tab === "send" && <SendScreen cfg={cfg} />}
+            </>
           )}
-          {loadError && (
-            <div className="app__banner" role="alert">
-              Could not reach the chain-state service: {loadError.slice(0, 160)}. Retrying every few seconds…
-            </div>
-          )}
-        </header>
-
-        {/* 1 — AT A GLANCE */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">1</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">At a glance</span>
-              <h2 className="app__h2">Your holding is sealed; its value keeps growing.</h2>
-            </div>
-          </div>
-          <p className="app__p">
-            Two figures tell the whole story. On the left, your holding — a sealed commitment nobody reading the ledger
-            can decode. On the right, the fund&apos;s published price per unit, which rises as interest accrues. The
-            amount stays hidden while it quietly gains value.
-          </p>
-
-          <div className="app__glance">
-            {/* Sealed holding */}
-            <div className="app__panel app__panel--sealed">
-              <div className="app__panel-k">Your holding</div>
-              {loading ? (
-                <div className="skeleton" style={{ height: 44, marginTop: 10, width: "70%" }} />
-              ) : auditorView && auditData?.plaintext_human ? (
-                <>
-                  <div className="app__panel-v" style={{ color: "var(--warn)" }}>
-                    {auditData.plaintext_human as string} units
-                  </div>
-                  <div className="app__panel-note">
-                    Revealed with the auditor key — matches the sealed on-chain commitment exactly.
-                  </div>
-                </>
-              ) : hiddenCommitted ? (
-                <>
-                  <div className="app__sealed-badge">
-                    <span className="app__seal-dot" aria-hidden /> Sealed
-                  </div>
-                  <div className="app__commit">on-chain commitment {short(conf!.receiving_commitment, 16)}</div>
-                  <div className="app__panel-note">
-                    Stored as a Pedersen commitment. Nobody reading the public ledger can see the amount.
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="app__panel-v provisional">Not sealed yet</div>
-                  <div className="app__panel-note">
-                    Visible balance: {units(st?.alice.wsFUND)} units. Seal it in section 4 to make it private.
-                  </div>
-                </>
-              )}
-            </div>
-
-            {/* Public price */}
-            <div className="app__panel app__panel--value">
-              <div className="app__panel-k">Published price per unit</div>
-              {loading ? (
-                <div className="skeleton" style={{ height: 44, marginTop: 10, width: "50%" }} />
-              ) : (
-                <>
-                  <div className="app__panel-v" style={{ color: "var(--gold)" }}>
-                    {st?.exchange_rate_human ?? "—"}
-                  </div>
-                  {accrueDone && <span className="app__trend" aria-hidden>↑ growing with interest</span>}
-                  <div className="app__panel-note">
-                    The fund&apos;s public NAV. It rises as interest accrues, so your hidden holding is worth more over
-                    time — without the amount ever being revealed.
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* 2 — DEPOSIT */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">2</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">Deposit</span>
-              <h2 className="app__h2">Move treasury into the yield wrapper.</h2>
-            </div>
-            {depositDone && <span className="app__done">Done</span>}
-          </div>
-          <p className="app__p">
-            Deposit into the confidential yield wrapper. Sign it in your own Freighter wallet, or run the enrolled demo
-            account that already holds funds.
-          </p>
-          <div className="app__stage">
-            <div className="app__actions">
-              <button className="primary" onClick={walletDeposit} disabled={!wallet.address || busy === "wallet-deposit"}>
-                {busy === "wallet-deposit" ? <span className="spinner" /> : "Deposit with my wallet (300 units)"}
-              </button>
-              <button onClick={() => step("deposit", "/api/step/deposit")} disabled={!!busy}>
-                {busy === "deposit" ? <span className="spinner" /> : "Deposit as demo treasurer"}
-              </button>
-            </div>
-            <Res r={results["wallet-deposit"]} explorer={cfg?.explorer} id={cfg?.contracts.wsFUND} />
-            <Res r={results["deposit"]} explorer={cfg?.explorer} id={cfg?.contracts.wsFUND} />
-            <div className="app__fine">
-              The wallet path builds a real <span className="mono">wsFUND.deposit</span> transaction and signs it with
-              Freighter. It needs the connected account to hold the fund token (rtFUND) on testnet; otherwise the
-              network returns a clear error, shown verbatim — never a fake success.
-            </div>
-          </div>
-        </section>
-
-        {/* 3 — YIELD */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">3</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">Yield</span>
-              <h2 className="app__h2">Interest accrues; the amount never changes.</h2>
-            </div>
-            {accrueDone && <span className="app__done">Done</span>}
-          </div>
-          <p className="app__p">
-            The fund pays interest. The published price per unit rises — watch the right-hand figure in section 1 move —
-            while your hidden holding stays exactly as it was.
-          </p>
-          <div className="app__stage">
-            <div className="app__actions">
-              <button onClick={() => step("accrue", "/api/step/accrue", { bps: 500 })} disabled={!!busy}>
-                {busy === "accrue" ? <span className="spinner" /> : "Simulate 5% interest (issuer)"}
-              </button>
-            </div>
-            <Res r={results["accrue"]} explorer={cfg?.explorer} id={cfg?.contracts.rtFUND} />
-          </div>
-        </section>
-
-        {/* 4 — SEAL (confidential) */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">4</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">Confidential</span>
-              <h2 className="app__h2">Seal the balance into the confidential ledger.</h2>
-            </div>
-            {sealDone && <span className="app__done">Sealed</span>}
-          </div>
-          <p className="app__p">
-            Move the holding into the confidential ledger. The amount becomes a sealed commitment — the holding panel in
-            section 1 switches from a visible balance to <strong>Sealed</strong>.
-          </p>
-          <div className="app__stage">
-            <div className="app__actions">
-              <button onClick={() => step("conf", "/api/step/conf-deposit", { amount: 300000000 })} disabled={!!busy}>
-                {busy === "conf" ? <span className="spinner" /> : "Seal balance confidentially"}
-              </button>
-            </div>
-            <Res r={results["conf"]} explorer={cfg?.explorer} id={cfg?.contracts.compliant_token} />
-          </div>
-        </section>
-
-        {/* 5 — ELIGIBILITY / TRANSFER */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">5</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">Eligibility</span>
-              <h2 className="app__h2">Only approved parties may hold the fund.</h2>
-            </div>
-            {rejectDone && <span className="app__done">Blocked</span>}
-          </div>
-          <p className="app__p">
-            A confidential transfer still respects the rules. Move the fund to an un-approved account and the network
-            rejects it — not this app, the chain itself, via the OpenZeppelin allowlist policy.
-          </p>
-          <div className="app__stage">
-            <div className="app__elig">
-              Approved to hold: treasurer{" "}
-              <span className={`pill ${st?.alice.allowlisted === "true" ? "good" : ""}`}>
-                {st?.alice.allowlisted === "true" ? "yes" : "no"}
-              </span>
-              <span aria-hidden>·</span> other party{" "}
-              <span className={`pill ${st?.bob.allowlisted === "true" ? "good" : ""}`}>
-                {st?.bob.allowlisted === "true" ? "yes" : "no"}
-              </span>
-            </div>
-            <div className="app__actions">
-              <button className="danger" onClick={() => step("reject", "/api/step/register-bob")} disabled={!!busy}>
-                {busy === "reject" ? <span className="spinner" /> : "Attempt transfer to un-approved party"}
-              </button>
-            </div>
-            {results["reject"] && (
-              <div className={`result ${results["reject"].ok ? "ok" : "fail"}`}>
-                <div className="result-head">
-                  <span className="ico" aria-hidden>{results["reject"].ok ? "✓" : "!"}</span>
-                  <span>
-                    {results["reject"].ok
-                      ? "Blocked on-chain, exactly as intended."
-                      : "Unexpected result — review the log."}
-                  </span>
-                </div>
-                <div>{results["reject"].label as string}</div>
-                {!!results["reject"].error_line && (
-                  <div className="mono" style={{ marginTop: 6, fontSize: 12 }}>
-                    {results["reject"].error_line as string}
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="app__fine">
-              The rejection is the OpenZeppelin allowlist policy firing on-chain (contract error #3602), not a UI check.
-            </div>
-          </div>
-        </section>
-
-        {/* 6 — AUDITOR */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">6</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">Selective disclosure</span>
-              <h2 className="app__h2">A permissioned auditor can reveal the true balance.</h2>
-            </div>
-            {auditDone && <span className="app__done">Revealed</span>}
-          </div>
-          <p className="app__p">
-            Private to the world, provable to the regulator. Reveal the figure behind the seal here, then watch the
-            holding panel in section 1 switch from <strong>Sealed</strong> to the real amount.
-          </p>
-          <div className="app__stage">
-            <div className="app__actions">
-              <button
-                onClick={async () => {
-                  await step("audit", "/api/step/audit");
-                  setAuditorView(true);
-                }}
-                disabled={!!busy}
-              >
-                {busy === "audit" ? <span className="spinner" /> : "Reveal true balance (auditor)"}
-              </button>
-              {auditDone && (
-                <button className="ghost" aria-pressed={auditorView} onClick={() => setAuditorView((v) => !v)}>
-                  {auditorView ? "Hide from glance" : "Show in glance"}
-                </button>
-              )}
-            </div>
-            {auditData && (
-              <div className={`result ${auditData.ok ? "ok" : "fail"}`}>
-                <div className="result-head">
-                  <span className="ico" aria-hidden>{auditData.ok ? "✓" : "!"}</span>
-                  <span>{auditData.ok ? "Revealed to the auditor." : "Could not reveal — review the log."}</span>
-                </div>
-                <div>{auditData.label as string}</div>
-                {!!auditData.plaintext_human && (
-                  <div style={{ marginTop: 6 }}>
-                    True balance:{" "}
-                    <strong style={{ color: "var(--warn)" }}>{auditData.plaintext_human as string} units</strong>
-                  </div>
-                )}
-                {!!auditData.onchain_commitment && (
-                  <div className="commitment mono">
-                    recomputed {short((auditData.recomputed_commitment as string) || "", 14)} == on-chain{" "}
-                    {short((auditData.onchain_commitment as string) || "", 14)}
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="disclosure">
-              <strong>Honesty note.</strong> The demo auditor key is the generator point (publicly known), and the
-              confidential deposit uses zero blinding, so this &quot;reveal&quot; is an exact point recomputation — not a
-              private ECDH channel. The sealed commitment, the on-chain rejection, and the UltraHonk enrolment proof are
-              all real on testnet. The proof is not zero-knowledge. See the repo README.
-            </div>
-          </div>
-        </section>
-
-        {/* 7 — WITHDRAW */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">7</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">Redeem</span>
-              <h2 className="app__h2">Withdraw, with the yield.</h2>
-            </div>
-            {redeemDone && <span className="app__done">Done</span>}
-          </div>
-          <p className="app__p">
-            Take it all back out. Because the published price grew, you receive more than you put in.
-          </p>
-          <div className="app__stage">
-            <div className="app__actions">
-              <button onClick={() => step("redeem", "/api/step/redeem")} disabled={!!busy}>
-                {busy === "redeem" ? <span className="spinner" /> : "Withdraw everything"}
-              </button>
-            </div>
-            <Res r={results["redeem"]} explorer={cfg?.explorer} id={cfg?.contracts.wsFUND} />
-          </div>
-        </section>
-
-        {/* 8 — UNDER THE HOOD */}
-        <section className="app__sec">
-          <div className="app__sechead">
-            <span className="app__secnum">8</span>
-            <div className="app__secmeta">
-              <span className="app__kicker">Under the hood</span>
-              <h2 className="app__h2">Live contracts, composed on Stellar.</h2>
-            </div>
-          </div>
-          <p className="app__p">
-            No mocked data. The ShareWrapper is our contribution; the confidential suite is OpenZeppelin v0.8.0,
-            composed as-is.
-          </p>
-          <div className="app__stage app__contracts">
-            {!cfg ? (
-              <>
-                <div className="skeleton" style={{ height: 18, marginBottom: 10 }} />
-                <div className="skeleton" style={{ height: 18, marginBottom: 10 }} />
-                <div className="skeleton" style={{ height: 18 }} />
-              </>
-            ) : (
-              Object.entries(cfg.contracts).map(([k, v]) => (
-                <div key={k} className="contract-row">
-                  <span className="mono" style={{ fontSize: 13 }}>
-                    {k}{" "}
-                    {cfg.ours.includes(k) ? (
-                      <span className="pill good">ours</span>
-                    ) : (
-                      <span className="pill">OZ as-is</span>
-                    )}
-                  </span>
-                  <a
-                    className="mono"
-                    style={{ fontSize: 12 }}
-                    href={`${cfg.explorer}${v}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {short(v, 6)} ↗
-                  </a>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-      </div>
-
-      <footer className="app__footer">
-        <span className="app__footer-sig">
-          <img src="/brand/mark-ink-48.png" alt="" aria-hidden width={24} height={24} />
-          <span>Sagittaire</span>
-        </span>
-        <a href={GITHUB} target="_blank" rel="noreferrer">GitHub ↗</a>
-        <span aria-hidden>·</span>
-        <span>HackMeridian 2026 · Stellar Composed</span>
-        <span aria-hidden>·</span>
-        <span>MIT · OpenZeppelin Confidential Contracts v0.8.0</span>
-        <span className="app__footer-caveat">
-          Confidential, not anonymous — balances are hidden Pedersen commitments; OpenZeppelin&apos;s UltraHonk proofs
-          are non-ZK today. Testnet demo.
-        </span>
-      </footer>
+        </div>
+      </main>
     </div>
   );
 }
 
-function Res({ r, explorer, id }: { r?: StepResult; explorer?: string; id?: string }) {
-  if (!r) return null;
+// ---- a chooser of whose live position to inspect ---------------------------
+function WhoChips({ whoList, whoKey, setWhoKey }: { whoList: Who[]; whoKey: string; setWhoKey: (k: string) => void }) {
+  if (whoList.length <= 1) return null;
   return (
-    <div className={`result ${r.ok ? "ok" : "fail"}`}>
-      <div className="result-head">
-        <span className="ico" aria-hidden>{r.ok ? "✓" : "!"}</span>
-        <span>{(r.label as string) || (r.ok ? "Done." : "Something went wrong.")}</span>
-        {explorer && id && (
-          <a
-            className="mono"
-            style={{ fontSize: 12, marginLeft: "auto" }}
-            href={`${explorer}${id}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            view contract ↗
-          </a>
+    <div className="pr__who" role="tablist" aria-label="View account">
+      {whoList.map((w) => (
+        <button key={w.key} role="tab" aria-selected={whoKey === w.key}
+          className={`pr__whochip ${whoKey === w.key ? "is-active" : ""}`} onClick={() => setWhoKey(w.key)}>
+          <span className="pr__whochip-label">{w.label}</span>
+          <span className="pr__whochip-sub">{w.sub}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// =============================================================================
+// PORTFOLIO — real balances for the inspected account, split into public
+// Tokens and sealed C-tokens, plus live on-chain transaction history.
+// =============================================================================
+function PortfolioScreen({
+  whoList, whoKey, setWhoKey, active, explorerC, onConnect, connecting,
+  sign, passphrase, walletAddress,
+}: {
+  whoList: Who[]; whoKey: string; setWhoKey: (k: string) => void;
+  active: Who | null; explorerC: string; onConnect: () => void; connecting: boolean;
+  sign: (xdr: string, passphrase: string) => Promise<string>;
+  passphrase?: string;
+  walletAddress?: string | null;
+}) {
+  const [data, setData] = useState<Portfolio | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollRes, setEnrollRes] = useState<
+    { ok?: boolean; blocked?: boolean; error_line?: string | null; hash?: string; error?: string } | null
+  >(null);
+
+  const load = useCallback(async (address: string) => {
+    setLoading(true); setErr(null);
+    try {
+      const r = await fetch(api(`/api/portfolio?address=${encodeURIComponent(address)}`));
+      const j: Portfolio = await r.json();
+      if (j.error) { setErr(j.error); setData(null); } else { setData(j); }
+    } catch (e) { setErr(String((e as Error)?.message || e)); setData(null); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    load(active.address);
+    const t = setInterval(() => load(active.address), 12000);
+    return () => clearInterval(t);
+  }, [active, load]);
+
+  // Confidential enrollment (register), signed in Freighter by the connected
+  // wallet. The backend builds the contract-bound proof + unsigned tx and
+  // simulates it: an allowlisted wallet gets an XDR to sign (real on-chain
+  // enrollment); a non-allowlisted wallet is rejected by the policy (#3602) at
+  // simulation, reported honestly with no signature and no broadcast.
+  const enroll = useCallback(async () => {
+    if (!active) return;
+    setEnrolling(true); setEnrollRes(null);
+    try {
+      const built = await fetch(api("/api/tx/build-register"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: active.address }),
+      }).then((r) => r.json());
+      if (!built?.ok) {
+        setEnrollRes({ ok: false, blocked: !!built?.blocked, error_line: built?.error_line, error: built?.error });
+        return;
+      }
+      if (!passphrase) { setEnrollRes({ ok: false, error: "Network not loaded yet. Retry." }); return; }
+      const signed = await sign(built.xdr, passphrase);
+      const sub = await fetch(api("/api/tx/submit"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ signedXdr: signed }),
+      }).then((r) => r.json());
+      setEnrollRes({ ok: !!sub.ok, hash: sub.hash, error: sub.ok ? undefined : sub.error });
+      await load(active.address);
+    } catch (e) {
+      setEnrollRes({ ok: false, error: String((e as Error)?.message || e) });
+    } finally {
+      setEnrolling(false); }
+  }, [active, passphrase, sign, load]);
+
+  // The enroll CTA is actionable only for the connected wallet (it signs).
+  const canEnroll = !!active && !!walletAddress && active.address === walletAddress;
+
+  if (!active) {
+    return (
+      <section className="pr__screen pr__screen--narrow">
+        <ScreenHead title="Portfolio" sub="Connect a wallet to see your live position on Stellar testnet" />
+        <div className="pr__card pr__form">
+          <button className="primary pr__big-btn" onClick={onConnect} disabled={connecting}>
+            {connecting ? <span className="spinner" /> : "Connect wallet"}
+          </button>
+          <div className="pr__hint">A connected wallet shows its real public balances and history. The sealed confidential balance is legible only for enrolled accounts.</div>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="pr__screen">
+      <ScreenHead title="Portfolio" sub={`Live position for ${active.label}`}
+        badge={data?.allowlisted ? "Eligible" : undefined} />
+      <WhoChips whoList={whoList} whoKey={whoKey} setWhoKey={setWhoKey} />
+
+      <div className="pr__addrline">
+        <span className="pr__k">Account</span>
+        <a className="mono" href={`https://stellar.expert/explorer/testnet/account/${active.address}`} target="_blank" rel="noreferrer">
+          {short(active.address, 10)} ↗
+        </a>
+        {data?.label && <span className="pr__rolepill">{data.label}</span>}
+      </div>
+
+      {err && <div className="pr__banner" role="alert">Could not load the position: {err.slice(0, 140)}. Retrying.</div>}
+
+      {loading && !data ? (
+        <div className="skeleton" style={{ height: 220, borderRadius: 16 }} />
+      ) : data ? (
+        <>
+          {/* Public tokens */}
+          <div className="pr__card">
+            <div className="pr__k">Tokens · public</div>
+            <div className="pr__tokgrid">
+              {data.tokens.map((t) => (
+                <div className="pr__tok" key={t.symbol}>
+                  <div className="pr__tok-head">
+                    <span className="pr__tok-sym">{t.symbol}</span>
+                    <a className="pr__tok-link mono" href={`${explorerC}${t.contract}`} target="_blank" rel="noreferrer">contract ↗</a>
+                  </div>
+                  <div className="pr__tok-num">{t.human}</div>
+                  <div className="pr__tok-name">{t.name}</div>
+                  {t.underlying_human && (
+                    <div className="pr__tok-foot">worth {t.underlying_human} rtFUND at NAV {data.exchange_rate_human}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Confidential c-tokens */}
+          <div className="pr__card pr__card--seal">
+            <div className="pr__k">C-tokens · confidential</div>
+            {!data.registered ? (
+              <div className="pr__enroll">
+                <div className="pr__enroll-head">
+                  <Lock open />
+                  <div>
+                    <div className="pr__sealvis-k">Not enrolled for confidential transfers</div>
+                    <div className="pr__tok-foot">
+                      Enrollment publishes this wallet&apos;s confidential keys on-chain so it can hold and receive a sealed balance. It succeeds only if the issuer has placed this address on the allowlist.
+                    </div>
+                  </div>
+                </div>
+                {canEnroll ? (
+                  <>
+                    <button className="primary pr__big-btn" onClick={enroll} disabled={enrolling}>
+                      {enrolling ? <span className="spinner" /> : "Enroll this wallet"}
+                    </button>
+                    {enrollRes && (
+                      <div className={`result ${enrollRes.ok ? "ok" : "fail"}`}>
+                        <div className="result-head">
+                          <span className="ico" aria-hidden>{enrollRes.ok ? "✓" : "✗"}</span>
+                          <span>
+                            {enrollRes.ok
+                              ? "Enrolled on-chain. This wallet can now hold confidential balances."
+                              : enrollRes.blocked
+                                ? "Rejected on-chain. This wallet is not on the issuer allowlist."
+                                : enrollRes.error || "Enrollment did not go through."}
+                          </span>
+                          {enrollRes.hash && (
+                            <a className="mono pr__reslink" href={`https://stellar.expert/explorer/testnet/tx/${enrollRes.hash}`} target="_blank" rel="noreferrer">view tx ↗</a>
+                          )}
+                        </div>
+                        {enrollRes.blocked && (
+                          <div className="pr__redeemfoot">
+                            The OpenZeppelin allowlist policy enforced this{enrollRes.error_line ? <> with <span className="mono">{enrollRes.error_line}</span></> : ""}. The gate fires at simulation, so nothing is signed or broadcast.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="pr__hint">Connect this wallet to enroll it. Enrollment is signed by the wallet itself in Freighter.</div>
+                )}
+              </div>
+            ) : data.ctokens.length === 0 ? (
+              <div className="pr__sealvis pr__sealvis--empty">
+                <Lock />
+                <div className="pr__sealvis-k">Enrolled · no sealed balance yet</div>
+                <div className="pr__sealvis-u">This wallet is registered for confidential transfers. It has no sealed position yet.</div>
+              </div>
+            ) : (
+              data.ctokens.map((c) => (
+                <div className="pr__ctok" key={c.symbol}>
+                  <div className="pr__ctok-head">
+                    <Lock />
+                    <div>
+                      <div className="pr__tok-sym">{c.symbol}</div>
+                      <div className="pr__tok-name">{c.name}</div>
+                    </div>
+                    <a className="pr__tok-link mono" href={`${explorerC}${c.contract}`} target="_blank" rel="noreferrer">contract ↗</a>
+                  </div>
+                  <div className="pr__ctok-body">
+                    <div className="pr__ctok-cell">
+                      <div className="pr__k">Decrypted balance · viewing key</div>
+                      <div className="pr__bignum">{c.decrypted_human ?? "sealed"}<span className="pr__tok-u"> units</span></div>
+                    </div>
+                    <div className="pr__ctok-cell">
+                      <div className="pr__k">Sealed commitment · on-chain</div>
+                      <div className="mono pr__commit">{short(c.spendable_commitment || c.receiving_commitment, 16)}</div>
+                      <div className="pr__tok-foot">Hidden from the public. The amount above is recovered with the viewing key.</div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* On-chain history */}
+          <div className="pr__card">
+            <div className="pr__k">Activity · on-chain</div>
+            {data.history.length === 0 ? (
+              <div className="pr__hint">No transactions yet for this account.</div>
+            ) : (
+              <div className="pr__hist">
+                {data.history.map((h) => (
+                  <a className="pr__histrow" key={h.hash} href={h.link} target="_blank" rel="noreferrer">
+                    <span className={`pr__histdot ${h.successful ? "is-ok" : "is-bad"}`} aria-hidden />
+                    <span className="mono pr__histhash">{short(h.hash, 8)}</span>
+                    <span className="pr__histmeta">{h.operation_count} op{h.operation_count === 1 ? "" : "s"}</span>
+                    <span className="pr__histtime">{when(h.created_at)}</span>
+                    <span className="pr__histlink mono">view ↗</span>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+// =============================================================================
+// WRAP — one action: deposit rtFUND into the confidential position and seal it.
+// POST /api/wrap {address, amount}. Returns a list of real on-chain txs.
+// =============================================================================
+function WrapScreen({ active, sign, passphrase, walletAddress }: {
+  active: Who | null;
+  sign: (xdr: string, passphrase: string) => Promise<string>;
+  passphrase?: string;
+  walletAddress?: string | null;
+}) {
+  const [amt, setAmt] = useState("300");
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<{ ok?: boolean; hash?: string; error?: string } | null>(null);
+
+  // The deposit (rtFUND -> wsFUND) is built server-side and SIGNED BY THE
+  // CONNECTED WALLET in Freighter, then submitted. This is a real self-custody
+  // action: the wallet authorises pulling its own rtFUND into the wrapper.
+  const canSign = !!active && !!walletAddress && active.address === walletAddress;
+
+  const wrap = useCallback(async () => {
+    if (!active) return;
+    setBusy(true); setRes(null);
+    try {
+      const amount = String(Math.max(0, Math.round(Number(amt) || 0)) * RATE_ONE);
+      const built = await fetch(api("/api/tx/build-deposit"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: active.address, amount }),
+      }).then((r) => r.json());
+      if (built.error) { setRes({ ok: false, error: built.error }); return; }
+      if (!passphrase) { setRes({ ok: false, error: "Network not loaded yet. Retry." }); return; }
+      const signed = await sign(built.xdr, passphrase);
+      const sub = await fetch(api("/api/tx/submit"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ signedXdr: signed }),
+      }).then((r) => r.json());
+      setRes({ ok: !!sub.ok, hash: sub.hash, error: sub.ok ? undefined : (sub.error || `status ${sub.status}`) });
+    } catch (e) { setRes({ ok: false, error: String((e as Error)?.message || e) }); }
+    finally { setBusy(false); }
+  }, [active, amt, sign, passphrase]);
+
+  return (
+    <section className="pr__screen pr__screen--narrow">
+      <ScreenHead title="Wrap" sub="Convert rtFUND into non-rebasing wsFUND shares, signed in your wallet"
+        badge={res?.ok ? "Wrapped" : undefined} />
+      <div className="pr__card pr__form">
+        <AmountField label="Amount" suffix="rtFUND" value={amt} onChange={setAmt} />
+        <div className="pr__actions">
+          <button className="primary pr__big-btn" onClick={wrap} disabled={busy || !canSign || Number(amt) <= 0}>
+            {busy ? <span className="spinner" /> : "Wrap and sign in wallet"}
+          </button>
+        </div>
+        {!canSign && <div className="pr__hint">Connect your wallet to wrap. The deposit is signed by your wallet in Freighter.</div>}
+        <div className="pr__hint">Converts rtFUND into wsFUND, a non-rebasing share whose value grows with the published NAV. Sealing a share into the confidential ledger is a separate issuer action.</div>
+        {res && (
+          <div className={`result ${res.ok ? "ok" : "fail"}`}>
+            <div className="result-head">
+              <span className="ico" aria-hidden>{res.ok ? "✓" : "!"}</span>
+              <span>{res.ok ? "Wrapped into wsFUND, signed by your wallet and confirmed on-chain." : (res.error || "Wrap did not go through.")}</span>
+              {res.hash && <a className="mono pr__reslink" href={`https://stellar.expert/explorer/testnet/tx/${res.hash}`} target="_blank" rel="noreferrer">view tx ↗</a>}
+            </div>
+          </div>
         )}
       </div>
-      {!!r.log && <div className="log">{String(r.log).slice(0, 2000)}</div>}
+    </section>
+  );
+}
+
+// =============================================================================
+// UNWRAP — redeem the position back to rtFUND, priced at the published NAV.
+// POST /api/unwrap {amount}.
+// =============================================================================
+function UnwrapScreen({ cfg }: { cfg: Cfg | null }) {
+  const [amt, setAmt] = useState("100");
+  const [busy, setBusy] = useState(false);
+  const [nav, setNav] = useState<string | null>(null);
+  const [res, setRes] = useState<Record<string, unknown> | null>(null);
+
+  // Read the live NAV from the treasurer's portfolio so the number is real.
+  useEffect(() => {
+    const alice = cfg?.accounts?.alice;
+    if (!alice) return;
+    fetch(api(`/api/portfolio?address=${alice}`)).then((r) => r.json())
+      .then((j: Portfolio) => setNav(j.exchange_rate_human || null)).catch(() => {});
+  }, [cfg]);
+
+  const redeem = useCallback(async () => {
+    setBusy(true); setRes(null);
+    try {
+      const amount = Math.max(0, Math.round(Number(amt) || 0)) * RATE_ONE;
+      const r = await fetch(api("/api/unwrap"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ amount }),
+      });
+      setRes(await r.json());
+    } catch (e) { setRes({ ok: false, error: String((e as Error)?.message || e) }); }
+    finally { setBusy(false); }
+  }, [amt]);
+
+  const ok = !!res?.ok;
+  return (
+    <section className="pr__screen pr__screen--narrow">
+      <ScreenHead title="Unwrap" sub="Redeem the position back to rtFUND, priced at the published NAV"
+        badge={ok ? "Redeemed" : undefined} />
+      <div className="pr__card pr__form">
+        <AmountField label="Amount" suffix="shares" value={amt} onChange={setAmt} />
+        <div className="pr__rate-note">
+          <span>Published NAV · per share</span>
+          <strong>{(res?.nav_human as string) || nav || "…"}</strong>
+        </div>
+        <div className="pr__actions">
+          <button className="primary pr__big-btn" onClick={redeem} disabled={busy || Number(amt) <= 0}>
+            {busy ? <span className="spinner" /> : "Redeem to rtFUND"}
+          </button>
+        </div>
+        {res && (
+          <div className={`result ${ok ? "ok" : "fail"}`}>
+            <div className="result-head">
+              <span className="ico" aria-hidden>{ok ? "✓" : "!"}</span>
+              <span>{(res.label as string) || (ok ? "Redeemed." : "Could not redeem.")}</span>
+              {!!res.tx_link && <a className="mono pr__reslink" href={res.tx_link as string} target="_blank" rel="noreferrer">view tx ↗</a>}
+            </div>
+            {ok && !!res.got_back_human && (
+              <div className="pr__redeemfoot">Received <strong>{res.got_back_human as string} rtFUND</strong> at NAV {res.nav_human as string}.</div>
+            )}
+            {!!res.error && <div className="log">{String(res.error).slice(0, 600)}</div>}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// =============================================================================
+// SEND — confidential or public transfer. POST /api/send {to, token, amount, from}.
+// A recipient off the allowlist is GENUINELY rejected by the on-chain policy
+// (#3602). Quick-fills: Carol is eligible, Bob is not.
+// =============================================================================
+function SendScreen({ cfg }: { cfg: Cfg | null }) {
+  const [to, setTo] = useState("");
+  const [amt, setAmt] = useState("40");
+  const [token, setToken] = useState<"confidential" | "rtFUND" | "wsFUND">("confidential");
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState<Record<string, unknown> | null>(null);
+
+  // Demo recipients: the whitelisted wallet succeeds, the non-whitelisted one
+  // is rejected on-chain by the allowlist policy (#3602).
+  const eligible = "GB5V4L4V5WNPTRTOHABHK2X5SIAACXHQBCRB62FU3DK2IQVYYX5U67RG";
+  const ineligible = "GBG4SUAAKTBPEYGPM3FG4XAPU3DDKDOTBAWFBPIHWNNCZZQCAH2423VM";
+
+  const send = useCallback(async () => {
+    setBusy(true); setRes(null);
+    try {
+      const amount = Math.max(0, Math.round(Number(amt) || 0)) * RATE_ONE;
+      const r = await fetch(api("/api/send"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to: to.trim(), amount, token }),
+      });
+      setRes(await r.json());
+    } catch (e) { setRes({ ok: false, error: String((e as Error)?.message || e) }); }
+    finally { setBusy(false); }
+  }, [to, amt, token]);
+
+  const ok = !!res?.ok && !res?.reverted && res?.broadcast !== false;
+  const blocked = !!res && (res.reverted === true || res.broadcast === false || !!res.error_line);
+
+  return (
+    <section className="pr__screen pr__screen--narrow">
+      <ScreenHead title="Send" sub="Transfer to an eligible account. The chain rejects anyone off the allowlist"
+        badge={ok ? "Sent" : blocked ? "Rejected on-chain" : undefined} />
+      <div className="pr__card pr__form">
+        <div className="pr__field">
+          <label className="pr__label" htmlFor="pr-to">Recipient address</label>
+          <div className="pr__amount">
+            <input id="pr-to" className="pr__amount-input" value={to} onChange={(e) => setTo(e.target.value.trim())}
+              placeholder="G…" autoComplete="off" spellCheck={false} />
+          </div>
+          <div className="pr__quickfills">
+            <button className="pr__quick" onClick={() => setTo(eligible)}>Whitelisted wallet</button>
+            <button className="pr__quick pr__quick--bad" onClick={() => setTo(ineligible)}>Non-whitelisted wallet</button>
+          </div>
+        </div>
+
+        <div className="pr__field">
+          <label className="pr__label">Token</label>
+          <div className="pr__seg" role="tablist">
+            {(["confidential", "rtFUND", "wsFUND"] as const).map((t) => (
+              <button key={t} role="tab" aria-selected={token === t}
+                className={`pr__segbtn ${token === t ? "is-active" : ""}`} onClick={() => setToken(t)}>
+                {t === "confidential" ? "Confidential" : t}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <AmountField label="Amount" suffix={token === "confidential" ? "units" : token} value={amt} onChange={setAmt} />
+
+        <div className="pr__actions">
+          <button className="primary pr__big-btn" onClick={send} disabled={busy || !to || Number(amt) <= 0}>
+            {busy ? <span className="spinner" /> : token === "confidential" ? "Send confidential transfer" : `Send ${token}`}
+          </button>
+        </div>
+
+        {res && (
+          <div className={`result ${ok ? "ok" : blocked ? "fail" : "fail"}`}>
+            <div className="result-head">
+              <span className="ico" aria-hidden>{ok ? "✓" : "✗"}</span>
+              <span>
+                {ok
+                  ? (res.label as string) || "Transfer confirmed on-chain."
+                  : blocked
+                    ? "Rejected on-chain. The recipient is not on the allowlist."
+                    : (res.label as string) || "Transfer did not go through."}
+              </span>
+              {!!res.tx_link && <a className="mono pr__reslink" href={res.tx_link as string} target="_blank" rel="noreferrer">view tx ↗</a>}
+            </div>
+            {blocked && (
+              <div className="pr__redeemfoot">
+                The OpenZeppelin allowlist policy enforced this{res.error_line ? <> with <span className="mono">{res.error_line as string}</span></> : ""}. The gate fires before broadcast, so no transaction is submitted and no funds move.
+              </div>
+            )}
+            {!!res.error && !blocked && <div className="log">{String(res.error).slice(0, 600)}</div>}
+          </div>
+        )}
+        <div className="pr__hint">Confidential sends carry a real UltraHonk transfer proof. Eligibility is enforced by the chain, not by this app.</div>
+      </div>
+    </section>
+  );
+}
+
+// =============================================================================
+// AUDITOR — a privileged key-holder role, not a holder tab. The key is POSTed
+// to /api/auditor/reveal, which decrypts EVERY confidential holder.
+// In this public demo the auditor key is 1 (sk=1).
+// =============================================================================
+function AuditorView() {
+  const [key, setKey] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [data, setData] = useState<AuditorReveal | null>(null);
+
+  // Wallet lookup: search any address and read its live rtFUND/wsFUND balances
+  // plus confidential status. Public balances resolve for any wallet; the
+  // confidential amount decrypts only where this auditor holds the viewing key.
+  const [q, setQ] = useState("");
+  const [qData, setQData] = useState<Portfolio | null>(null);
+  const [qLoading, setQLoading] = useState(false);
+  const [qErr, setQErr] = useState<string | null>(null);
+  const lookup = useCallback(async () => {
+    const a = q.trim();
+    if (!a || !a.startsWith("G") || a.length !== 56) { setQErr("Enter a valid Stellar address (G...)."); setQData(null); return; }
+    setQLoading(true); setQErr(null);
+    try {
+      const j: Portfolio = await fetch(api(`/api/portfolio?address=${encodeURIComponent(a)}`)).then((r) => r.json());
+      if ((j as { error?: string }).error) { setQErr(String((j as { error?: string }).error)); setQData(null); }
+      else setQData(j);
+    } catch (e) { setQErr(String((e as Error)?.message || e)); setQData(null); }
+    finally { setQLoading(false); }
+  }, [q]);
+
+  const reveal = useCallback(async () => {
+    const k = key.trim();
+    if (!k) { setError("Enter the auditor key to reveal confidential holders."); setData(null); return; }
+    setLoading(true); setError(null);
+    try {
+      const res = await fetch(api("/api/auditor/reveal"), {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: k }),
+      });
+      const json: AuditorReveal = await res.json().catch(() => ({ ok: false }));
+      if (json?.ok === false || !Array.isArray(json?.holders)) {
+        setData(null);
+        setError("That key does not grant disclosure. Check the auditor key and try again.");
+        return;
+      }
+      setData(json);
+    } catch { setData(null); setError("Could not reach the disclosure service. Try again."); }
+    finally { setLoading(false); }
+  }, [key]);
+
+  const holders = data?.holders ?? [];
+  const revealed = holders.length > 0;
+
+  return (
+    <section className="pr__screen">
+      <ScreenHead title="Auditor" sub="Selective disclosure. Look up any wallet, or paste the auditor key to reveal every confidential holder"
+        badge={revealed ? `${holders.length} revealed` : undefined} />
+
+      <div className="pr__card pr__form">
+        <div className="pr__field">
+          <label className="pr__label" htmlFor="pr-audkey">Paste the auditor key</label>
+          <div className="pr__amount pr__keyfield">
+            <input id="pr-audkey" className="pr__amount-input pr__key-input" value={key}
+              onChange={(e) => setKey(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") reveal(); }}
+              placeholder="auditor key" autoComplete="off" spellCheck={false} />
+          </div>
+        </div>
+        <div className="pr__actions">
+          <button className="primary pr__big-btn" onClick={reveal} disabled={loading}>
+            {loading ? <span className="spinner" /> : "Reveal"}
+          </button>
+        </div>
+        {error && (
+          <div className="result fail" role="alert">
+            <div className="result-head"><span className="ico" aria-hidden>!</span><span>{error}</span></div>
+          </div>
+        )}
+        {!error && !revealed && !loading && (
+          <div className="pr__hint">No wallet needed. Enter the auditor key to decrypt the confidential ledger. In this demo the key is <code>1</code>.</div>
+        )}
+      </div>
+
+      {/* Wallet lookup explorer: shown only once the auditor key is accepted. */}
+      {revealed && (
+      <div className="pr__card pr__form">
+        <div className="pr__k">Look up a wallet</div>
+        <div className="pr__field">
+          <div className="pr__amount pr__keyfield">
+            <input className="pr__amount-input pr__key-input" value={q}
+              onChange={(e) => setQ(e.target.value.trim())}
+              onKeyDown={(e) => { if (e.key === "Enter") lookup(); }}
+              placeholder="G… wallet address" autoComplete="off" spellCheck={false} />
+          </div>
+        </div>
+        <div className="pr__actions">
+          <button className="primary pr__big-btn" onClick={lookup} disabled={qLoading}>
+            {qLoading ? <span className="spinner" /> : "Search"}
+          </button>
+        </div>
+        {qErr && (
+          <div className="result fail"><div className="result-head"><span className="ico" aria-hidden>!</span><span>{qErr}</span></div></div>
+        )}
+        {qData && (
+          <div className="pr__lookup">
+            <div className="pr__lookuphead">
+              <span className="pr__tok-sym">{qData.label || qData.role}</span>
+              {qData.allowlisted && <span className="pr__verified">allowlisted</span>}
+              <a className="pr__tok-link mono" href={`https://stellar.expert/explorer/testnet/account/${qData.address}`} target="_blank" rel="noreferrer">{short(qData.address, 10)} ↗</a>
+            </div>
+            <div className="pr__tokgrid">
+              {qData.tokens.map((t) => (
+                <div className="pr__tok" key={t.symbol}>
+                  <div className="pr__tok-head"><span className="pr__tok-sym">{t.symbol}</span></div>
+                  <div className="pr__tok-num">{t.human}</div>
+                </div>
+              ))}
+            </div>
+            <div className="pr__tok-foot">
+              Confidential: {!qData.registered
+                ? "not enrolled"
+                : qData.ctokens[0]?.decrypted_human
+                  ? `decrypted ${qData.ctokens[0].decrypted_human} units`
+                  : "sealed commitment, viewing key not held by this auditor"}
+            </div>
+          </div>
+        )}
+      </div>
+      )}
+
+      {revealed && (
+        <div className="pr__card">
+          <div className="pr__k">Confidential holders · decrypted</div>
+          <div className="pr__audtable">
+            {holders.map((h, i) => (
+              <div className="pr__audrow" key={`${h.address}-${i}`}>
+                <div className="pr__audwho">
+                  <div className="pr__audlabel">
+                    {h.label || `Holder ${i + 1}`}
+                    {h.verified && <span className="pr__verified" title="Recomputed against the on-chain commitment">verified</span>}
+                  </div>
+                  {h.address && <div className="pr__audaddr mono">{short(h.address, 10)}</div>}
+                </div>
+                <div className="pr__audbal">
+                  <span className="pr__audbal-num">{h.balance_human ?? ""}</span>
+                  <span className="pr__audbal-u">units</span>
+                </div>
+                <div className="pr__audcommit mono" title={h.commitment || ""}>{h.commitment ? short(h.commitment, 12) : ""}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="disclosure">
+        <strong>Selective disclosure.</strong> This is the issuer and regulator capability. The auditor key decrypts every confidential holding at once. Confidential, not anonymous. Balances are hidden from the public yet fully legible to the key-holder.
+      </div>
+    </section>
+  );
+}
+
+// ---- shared bits -----------------------------------------------------------
+function ScreenHead({ title, sub, badge }: { title: string; sub: string; badge?: string }) {
+  return (
+    <div className="pr__screenhead">
+      <div>
+        <h1 className="pr__h1">{title}</h1>
+        <p className="pr__sub">{sub}</p>
+      </div>
+      {badge && <span className="pr__badge">{badge}</span>}
     </div>
+  );
+}
+
+function AmountField({ label, suffix, value, onChange }: { label: string; suffix: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="pr__field">
+      <label className="pr__label">{label}</label>
+      <div className="pr__amount">
+        <input className="pr__amount-input" inputMode="decimal" value={value}
+          onChange={(e) => onChange(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0" />
+        <span className="pr__amount-suffix">{suffix}</span>
+      </div>
+    </div>
+  );
+}
+
+function Lock({ open = false }: { open?: boolean }) {
+  return (
+    <svg className={`pr__lock ${open ? "is-open" : ""}`} viewBox="0 0 48 60" width={40} height={50} aria-hidden>
+      <path className="pr__lock-shackle" d={open ? "M14 26 V18 a10 10 0 0 1 20 0 V22" : "M14 26 V18 a10 10 0 0 1 20 0 V26"}
+        fill="none" strokeWidth="4" strokeLinecap="round" />
+      <rect className="pr__lock-body" x="8" y="26" width="32" height="26" rx="4" />
+      <circle className="pr__lock-hole" cx="24" cy="37" r="3.4" />
+      <rect className="pr__lock-hole" x="22.6" y="38" width="2.8" height="7" rx="1.4" />
+    </svg>
   );
 }

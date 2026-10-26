@@ -97,6 +97,13 @@ RUN git clone --no-checkout --depth 1 --filter=blob:none \
 COPY circuits/ /app/circuits/
 COPY scripts/ /app/scripts/
 COPY deployments/ /app/deployments/
+# Genesis confidential proof artifacts (register_alice/conf_total,
+# register_carol, transfer_ac/transfer.json, transfer_state openings). The
+# entrypoint stages these into /app/out on first boot IF absent, so the
+# confidential deposit/auditor/send flows have the same self-consistent
+# opening state the local e2e produces. Values match the LIVE on-chain
+# commitments byte-for-byte (verified via the OZ Pedersen gadget).
+COPY seed/ /app/seed/
 
 # scripts/*.mjs need @stellar/stellar-sdk at scripts/node_modules.
 RUN cd /app/scripts && npm install --omit=dev --no-audit --no-fund

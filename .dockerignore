@@ -1,7 +1,10 @@
 # Build artifacts and deps — rebuilt / reinstalled inside the image.
 **/node_modules
 **/target
-out
+# Exclude the WORKING out/ (runtime-generated, machine-specific) at the context
+# root only — NOT seed/out, which ships the honest genesis proof artifacts the
+# container stages into /app/out on first boot.
+/out
 web/dist
 web/.next
 web/_vite_legacy

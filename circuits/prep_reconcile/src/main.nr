@@ -3,7 +3,8 @@
 // spendable_commitment.
 //
 // It walks a deterministic grid of plaintext balances v = i * step (i in
-// 0..N) at the only two blindings this e2e ever produces:
+// 0..N; step = 1e6, N = 4001 => v in {0, 1e6, ..., 4_000_000_000}) at the only
+// two blindings this e2e ever produces:
 //   * r = 0                        (pure zero-blinding deposits)
 //   * r = derive_spend_r(vk, sigma) (new-spendable blinding after a transfer)
 // For each candidate it recomputes commit(v, r) with the EXACT OZ Pedersen
@@ -23,7 +24,7 @@
 //   r     = the matching blinding (0 if none).
 use stellar_confidential_lib::{commit, derive_spend_r};
 
-global N: u32 = 31; // grid points per blinding: v in {0, step, ..., 30*step}
+global N: u32 = 4001; // grid points per blinding: v in {0, step, ..., (N-1)*step}
 
 fn main(cx: Field, cy: Field, vk: Field, sigma: Field, step: Field) -> pub [Field; 3] {
     let r_fixed = derive_spend_r(vk, sigma);
