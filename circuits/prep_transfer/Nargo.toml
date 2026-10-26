@@ -1,0 +1,14 @@
+[package]
+name = "prep_transfer"
+type = "bin"
+authors = ["confidential-rwa"]
+# Same pinned toolchain as the OZ circuits (nargo 1.0.0-beta.11 + bb 0.87.0).
+compiler_version = "=1.0.0"
+
+[dependencies]
+# Reuse the EXACT OZ confidential lib so every derived field (commitments,
+# ECDH ciphertexts, sponge masks) is byte-identical to what the transfer
+# circuit constrains and what the on-chain token reassembles. Path is filled
+# in by scripts/make_transfer.sh which runs this in a throwaway copy of the
+# ref circuits workspace (never mutates reference/).
+stellar_confidential_lib = { path = "../lib" }

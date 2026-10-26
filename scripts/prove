@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Thin convenience wrapper so the prover is reachable at the repo-conventional
+# scripts/prove path. Delegates to circuits/prove.sh (the real implementation).
+#   scripts/prove <circuit> <prover_toml> <out_dir>
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/../circuits/prove.sh" "$@"

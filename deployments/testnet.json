@@ -1,0 +1,59 @@
+{
+  "network": "testnet",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "generated_at": "2026-10-25T23:14:53Z",
+  "note": "underlying of the confidential token is wsFUND (plain SEP-41, NOT a SAC); sac_passthrough=false so the allowlist-policy is the sole on-chain eligibility gate. The auditor key (auditor_id 0) is K_aud = 1*H = H (sk_aud=1) — EXAMPLE ONLY, publicly decryptable. It was rotated from the Grumpkin value-generator G to H because an auditor ECDH channel is only decryptable when K_aud = sk_aud*H; G is not of that form (unknown DLOG base H), so a G key could never decrypt transfer ciphertexts. With K_aud=H the auditor genuinely recovers the transferred amount from both the sender and recipient channels (scripts/auditor_decrypt.sh).",
+  "accounts": {
+    "feepayer": "GA2OAPCLRKA672EFNNEHQDJ2JPZ7BMM7XGDFZSQIGAIFMNB3JRKJFOZQ",
+    "admin": "GBYVWM2ELDHUHT7OZ3HWZFSYXEGVXDT6G6BAISPES42VWMC2AALNNR4Z",
+    "issuer": "GAFDPSRNPRGUWF47VSG33LDECIAVGWJZGH6EENGVP4DK7SXCW6D6TUJA",
+    "alice": "GCQIJJZZIXPPCHXJXJABNCAHDEEFJNOJT2HFWZQRKI5XMXCNJRSGIMAY",
+    "bob": "GDKMFF6ZHAWBYXYLVYKNC6TXIP5TDUFRGYE5JLVHHWBA6HJTV6AEDC4D",
+    "carol": "GAPLKSLWHAYYDNPTG7SRSVXT4X3W6XYNZ2IFHLVCNZKK7VPS4QWIUYZ3"
+  },
+  "key_aliases": {
+    "feepayer": "crwa-feepayer",
+    "admin": "crwa-admin",
+    "issuer": "crwa-issuer",
+    "alice": "crwa-alice",
+    "bob": "crwa-bob",
+    "carol": "crwa-carol"
+  },
+  "contracts": {
+    "rtFUND": "CDTZL6HUYZMC2FVX5QNSY5YWF2ALELI6IRZKJ4OHLJ4B5P5NWBXBUZJU",
+    "wsFUND": "CCQNKSFQNWJINCOMYVCVWHC6SYNTS3MU7G6SF3XMKDMC4VVVTETOY3AH",
+    "verifier": "CDI4DXFNVFPJXI7HA5PN4PEGVDE6YEA7AWUOV2ZV6RLCNFXD7YI4BO3E",
+    "auditor": "CCI6UCDLXQU7FPDVWZNHYAXCQXBW2HYT4XFTUC6ME6LTX2UOWSX7SO6P",
+    "factory": "CA5KJS2XWA74M727HVPQGRVGFBNTC4NONV67PBI46ZQCNDSB44F2BG3F",
+    "allowlist_policy": "CABO3F5CJU5J4AUARCR6N6KTGPRGNEAQBYLBR3M27ZTACGHJJ3JNGUVY",
+    "compliant_token": "CDJRMM26MSY6FNCG53OIED74C5UJ5OPBHKNG4LZA2ZTKSV25QWNPD4SU"
+  },
+  "wasm_hashes": {
+    "rtFUND": "4f49685b5b13f9316f2e51c45f8e4bcbc6c04dd63678bf1dc5c55c9880974818",
+    "wsFUND": "951fae06f69905ca1a6fc0b0fbaadaf68d049422d02802b4ff2fa57c7b2903ce",
+    "compliant_token": "baca686aab5802648d4bd8d5aba3b8ba064d45a8716360e037ccd209f9131afc",
+    "allowlist_policy": "bd17b8071d2650c0c6727d76c1baef21ba5554aa719179378264cf8da1e27092"
+  },
+  "wasm_hashes_note": "sha256 of each built WASM == the hash deployed on-chain (verified live: `stellar contract info hash --id <id> --network testnet`). rtFUND=mock_rebasing_rwa.wasm, wsFUND=share_wrapper.wasm, built with `stellar contract build --package <crate>` (stellar CLI 27.0.0).",
+  "ours": [
+    "rtFUND",
+    "wsFUND"
+  ],
+  "oz_as_is": [
+    "verifier",
+    "auditor",
+    "factory",
+    "allowlist_policy",
+    "compliant_token"
+  ],
+  "auditor_id": 0,
+  "vks_registered": [
+    "register:0",
+    "withdraw:1",
+    "transfer:2",
+    "spender_transfer:3",
+    "set_spender:4",
+    "clawback:100"
+  ],
+  "carol_note": "carol: eligible transfer recipient (allowlisted + confidentially registered with a REAL contract-bound proof, sk=0x2b). Added by TRANSFER IMPLEMENTER iteration 0."
+}

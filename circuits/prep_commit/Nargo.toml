@@ -1,0 +1,8 @@
+[package]
+name = "prep_commit"
+type = "bin"
+authors = ["confidential-rwa"]
+compiler_version = "=1.0.0"
+
+[dependencies]
+stellar_confidential_lib = { path = "../lib" }

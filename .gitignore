@@ -1,0 +1,24 @@
+# Rust
+target/
+**/target/
+
+# Node
+node_modules/
+**/node_modules/
+web/dist/
+web/.next/
+**/_vite_legacy/
+
+# Generated proofs / local opening state (regenerable)
+out/
+
+# Third-party OpenZeppelin reference clone (~2.3G) — clone it yourself, see README
+reference/
+
+# misc
+.env
+.env.*
+.DS_Store
+*.log
+dist/
+.next/

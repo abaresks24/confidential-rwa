@@ -1,0 +1,13 @@
+[package]
+name = "prep_register"
+type = "bin"
+authors = ["confidential-rwa"]
+# Same pinned toolchain as the OZ circuits (nargo 1.0.0-beta.11 + bb 0.87.0).
+compiler_version = "=1.0.0"
+
+[dependencies]
+# Reuse the EXACT OZ confidential lib so addr_f / vk / Y / PVK derivations are
+# byte-identical to what the on-chain token recomputes. Path is filled in by
+# scripts/make_register.sh which runs this in a throwaway copy of the ref
+# circuits workspace (never mutates reference/).
+stellar_confidential_lib = { path = "../lib" }

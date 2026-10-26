@@ -1,0 +1,10 @@
+{
+  "name": "confidential-rwa-scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Deploy/e2e helpers. build_register_data.mjs assembles the XDR RegisterData envelope (real UltraHonk register proof) for the OZ confidential token.",
+  "dependencies": {
+    "@stellar/stellar-sdk": "^17.4.0"
+  }
+}

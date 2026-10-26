@@ -1,0 +1,13 @@
+# Canonical register fixture, lifted verbatim from the OZ circuit tests
+# (reference/.../circuits/register/src/tests.nr). sk=0xdead, addr_f=0xbeef,
+# acct_f=0xf00d; Y and PVK are the fixture's derived Grumpkin points.
+# This is a real, constraint-satisfying witness: `nargo execute` solves it and
+# the resulting proof verifies. Real deployments substitute the holder's own
+# spending secret and the contract/account binding fields.
+sk = "0xdead"
+y_x = "0x1b46b003b88a6c34549dc74115f088f4b231a151397526bc10cbf1d15b457646"
+y_y = "0x29116280600c10ead1fdbd9ab4b571896030679bf554d7f1ebf681e5147de21b"
+pvk_x = "0x2e7421c0e86a4c8eed823edf851c364ecee448bf70eae2a95befe3dd9364cc45"
+pvk_y = "0x0b060655740aabef84e7305bb886b75da8d258f346381f03925d69645292fe7a"
+addr_f = "0xbeef"
+_acct_f = "0xf00d"
