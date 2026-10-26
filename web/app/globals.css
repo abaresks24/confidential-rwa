@@ -108,19 +108,13 @@ html, body {
 body {
   min-height: 100vh;
   overflow-x: hidden;
-  background-color: var(--red-mid);
-  background-image:
-    /* grain overlay — fine paper tooth, like the logo backdrop */
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E"),
-    /* subtle vignette — the real logo paper is bright and barely darkens at the edges */
-    radial-gradient(150% 140% at 50% 32%, transparent 64%, rgba(184,23,28,0.16) 100%),
-    /* core glow — bright crimson paper: red-hi lift up top, settling to red-mid/brand,
-       matching the real logo vector (center ~#D6212A/#E44E5A, lighter toward the top) */
-    radial-gradient(135% 115% at 50% 22%, var(--red-hi) 0%, var(--red-mid) 46%, var(--red-brand) 88%, var(--red-edge) 100%);
-  background-attachment: fixed, fixed, fixed;
-  background-repeat: repeat, no-repeat, no-repeat;
-  background-size: 200px 200px, cover, cover;
-  background-blend-mode: soft-light, normal, normal;
+  /* The REAL red paper texture, lifted straight from the logo artwork. */
+  background-color: #D6212A;
+  background-image: url("/brand/paper.jpg");
+  background-repeat: no-repeat;
+  background-position: center top;
+  background-size: cover;
+  background-attachment: fixed;
 }
 
 /* ---------------------------------------------------------------------------
@@ -430,81 +424,511 @@ button:not(.primary) .spinner { border: 2px solid rgba(196,28,36,0.3); border-to
   button, .sg-btn { transition: none; }
 }
 
-/* ---------------------------------------------------------------------------
-   12. LANDING  (.lp) — one viewport, the centaur as the star.
-       Top bar (Docs + Connect), a centered stack, one quiet footer line.
-   --------------------------------------------------------------------------- */
-.lp {
+/* ===========================================================================
+   12. LANDING  (.sc) — SCROLLYTELLING.
+       A tall intro stage with a sticky hero drives a scroll choreography,
+       then the protocol explanation unrolls below over the parallax paper.
+       Scroll progress is published by JS as CSS vars on .sc:
+         --p    hero progress 0..1   (fade text, shrink+raise the centaur)
+         --bgY  parallax paper offset in px (set inline as translateY)
+       =========================================================================== */
+.sc {
+  position: relative;
   min-height: 100vh;
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  padding: 26px clamp(20px, 5vw, 52px) 30px;
+  --p: 0;
+  --bgY: 0px;
 }
-.lp__bar {
-  flex: none;
+
+/* --- Parallax paper layer: the REAL fine texture, unrolling downward. -------
+   Oversized and translated so an edge is never revealed. Sits above the body
+   background (which stays as a solid fallback) but below all content. */
+.sc__paper {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-color: var(--red-mid);
+  background-image: url("/brand/paper-fine.jpg");
+  background-repeat: repeat;
+  /* finer + subtle: a small tile keeps the grain fine on big screens */
+  background-size: 300px 300px;
+  /* Parallax via background-position on an INFINITE repeating tile — the layer
+     always fills the viewport and can never reveal an edge. */
+  background-position: center var(--bgY);
+  will-change: background-position;
+}
+/* A top-down depth wash + vignette so text sits on a calmer field and the
+   paper never competes with copy. Fixed, above the paper, below content. */
+.sc__wash {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(228, 78, 90, 0.22) 0%, rgba(228, 78, 90, 0) 55%),
+    linear-gradient(180deg, rgba(14, 6, 5, 0.06) 0%, rgba(14, 6, 5, 0.0) 22%, rgba(14, 6, 5, 0.10) 70%, rgba(14, 6, 5, 0.22) 100%),
+    radial-gradient(130% 120% at 50% 48%, rgba(14, 6, 5, 0) 52%, rgba(14, 6, 5, 0.26) 100%);
+}
+
+/* --- Persistent top bar ----------------------------------------------------- */
+.sc__bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 22px;
+  padding: 16px clamp(18px, 5vw, 52px);
+  transition: background 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+  border-bottom: 1px solid transparent;
 }
-.lp__docs {
+.sc__bar.is-scrolled {
+  background: rgba(150, 18, 24, 0.42);
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  border-bottom-color: rgba(243, 233, 221, 0.14);
+  box-shadow: 0 8px 30px rgba(14, 6, 5, 0.22);
+}
+/* The small mark lives in the bar; it only shows once the big hero centaur has
+   flown up (otherwise the two centaurs overlap). */
+.sc__home {
+  display: inline-flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+.sc__home:hover { text-decoration: none; opacity: 0.9; }
+.sc__bar-mark {
+  width: 30px;
+  height: auto;
+  filter: drop-shadow(0 1px 5px rgba(14, 6, 5, 0.4));
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 260ms ease, transform 260ms ease;
+}
+.sc__bar.is-scrolled .sc__bar-mark { opacity: 1; transform: none; }
+.sc__bar-word {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 21px;
+  letter-spacing: 0.4px;
+  color: var(--cream);
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 260ms ease 40ms, transform 260ms ease 40ms;
+  text-shadow: 0 1px 8px rgba(14, 6, 5, 0.35);
+}
+.sc__bar.is-scrolled .sc__bar-word { opacity: 1; transform: none; }
+.sc__bar-actions { display: flex; align-items: center; gap: clamp(14px, 2vw, 24px); }
+.sc__docs {
   font-family: var(--font-ui);
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.2px;
   color: var(--cream-dim);
-  padding: 8px 4px;
 }
-.lp__docs:hover { color: var(--cream); text-decoration: none; }
-.lp__connect { text-decoration: none; }
-.lp__connect:hover { text-decoration: none; }
+.sc__docs:hover { color: var(--cream); text-decoration: none; }
+.sc__launch { text-decoration: none; }
+.sc__launch:hover { text-decoration: none; }
 
-/* Centered hero stack — generous vertical rhythm, the mark dominant. */
-.lp__stage {
-  flex: 1 1 auto;
+/* --- INTRO STAGE: tall; the hero inside is sticky --------------------------- */
+.sc__stage {
+  position: relative;
+  z-index: 10;
+  height: 220vh; /* sticky hero pinned for the extra 120vh of scroll */
+}
+.sc__sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  height: 100svh;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+}
+
+/* The hero stack. The whole stack rises + shrinks with --p; the text fades
+   first (0 → 0.4), then the centaur travels up (0.3 → 1). */
+.sc__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
-  gap: 8px;
-  /* nudge optically above dead-center so the footer line reads as margin */
-  padding-bottom: clamp(24px, 6vh, 64px);
+  /* shrink + rise. scale 1 → ~0.07 (toward the 30px bar mark), lift upward. */
+  transform:
+    translateY(calc(var(--p) * -46vh))
+    scale(calc(1 - 0.92 * var(--p)));
+  transform-origin: center top;
+  will-change: transform;
 }
-.lp__mark {
-  width: clamp(240px, 40vw, 468px);
+.sc__mark {
+  width: clamp(240px, 38vw, 430px);
   height: auto;
-  filter: drop-shadow(0 14px 40px rgba(14, 6, 5, 0.42));
-  margin-bottom: clamp(14px, 3vh, 32px);
+  filter: drop-shadow(0 16px 44px rgba(14, 6, 5, 0.45));
 }
-.lp__title {
+.sc__heroText {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: clamp(12px, 3vh, 30px);
+  /* fade + collapse upward as the story starts (drives off --p, eased to ~0.42) */
+  opacity: calc(1 - min(1, var(--p) / 0.42));
+  transform: translateY(calc(min(1, var(--p) / 0.42) * -18px));
+  will-change: opacity, transform;
+}
+.sc__title {
   font-family: var(--font-serif);
   font-weight: 500;
   color: var(--cream);
   font-size: clamp(52px, 9vw, 108px);
   line-height: 0.95;
   letter-spacing: 0.5px;
-  text-shadow: 0 2px 22px rgba(13, 10, 13, 0.32);
+  text-shadow: 0 2px 24px rgba(13, 10, 13, 0.34);
 }
-.lp__line {
+.sc__line {
   font-family: var(--font-ui);
   font-size: clamp(14px, 1.7vw, 17px);
   font-weight: 400;
   color: var(--cream-dim);
-  max-width: 46ch;
-  line-height: 1.5;
-  margin-top: 14px;
+  max-width: 44ch;
+  line-height: 1.55;
+  margin-top: 16px;
 }
-.lp__foot {
-  flex: none;
-  text-align: center;
+.sc__scrollcue {
+  position: absolute;
+  bottom: clamp(22px, 5vh, 46px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 2.2px;
+  text-transform: uppercase;
+  color: rgba(243, 233, 221, 0.5);
+  /* fades as soon as the user engages the story */
+  opacity: calc(1 - min(1, var(--p) / 0.18));
+}
+.sc__scrollcue::after {
+  content: "";
+  display: block;
+  width: 1px;
+  height: 26px;
+  margin: 8px auto 0;
+  background: linear-gradient(180deg, rgba(243, 233, 221, 0.5), rgba(243, 233, 221, 0));
+}
+
+/* --- STORY: protocol explanation -------------------------------------------- */
+.sc__story {
+  position: relative;
+  z-index: 10;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 0 clamp(20px, 5vw, 40px) clamp(80px, 12vh, 140px);
+}
+.sc__sec {
+  padding: clamp(60px, 11vh, 120px) 0;
+  border-top: 1px solid rgba(243, 233, 221, 0.12);
+}
+.sc__sec:first-child { border-top: none; padding-top: clamp(30px, 6vh, 70px); }
+
+.sc__kicker {
   font-family: var(--font-ui);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--cream);
+  opacity: 0.72;
+  margin-bottom: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.sc__kicker::before {
+  content: "";
+  width: 28px;
+  height: 1px;
+  background: rgba(243, 233, 221, 0.45);
+}
+.sc__h2 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  color: var(--cream);
+  font-size: clamp(28px, 4.6vw, 48px);
+  line-height: 1.08;
+  letter-spacing: 0.2px;
+  max-width: 18ch;
+  text-shadow: 0 2px 18px rgba(13, 10, 13, 0.3);
+}
+.sc__body {
+  margin-top: 20px;
+  font-family: var(--font-ui);
+  font-size: clamp(15px, 1.7vw, 17.5px);
+  line-height: 1.68;
+  color: var(--cream);
+  opacity: 0.84;
+  max-width: 54ch;
+}
+
+/* --- DIAGRAM shared --------------------------------------------------------- */
+.dg { margin-top: clamp(32px, 5vh, 52px); }
+
+/* (a) Public ledger diagram */
+.dg--ledger {
+  max-width: 520px;
+  background: rgba(14, 6, 5, 0.26);
+  border: 1px solid rgba(243, 233, 221, 0.16);
+  border-radius: var(--radius);
+  padding: 8px 20px 18px;
+  box-shadow: 0 18px 40px rgba(14, 6, 5, 0.26), inset 0 1px 0 rgba(243, 233, 221, 0.06);
+}
+.dg-ledger-head {
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  font-weight: 700;
   letter-spacing: 1.4px;
   text-transform: uppercase;
-  color: rgba(243, 233, 221, 0.4);
+  color: rgba(243, 233, 221, 0.55);
+  padding: 14px 0 10px;
+  border-bottom: 1px solid rgba(243, 233, 221, 0.12);
+}
+.dg-ledger-rows { list-style: none; margin: 0; padding: 0; }
+.dg-ledger-rows li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 0;
+  border-bottom: 1px solid rgba(243, 233, 221, 0.08);
+}
+.dg-ledger-rows li:last-child { border-bottom: none; }
+.dg-ledger-acct {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--cream-dim);
+  letter-spacing: 0.3px;
+}
+.dg-ledger-amt {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+}
+.dg-ledger-amt--open { color: var(--cream); }
+.dg-ledger-rows .is-sealed .dg-ledger-acct { color: var(--cream); }
+.dg-ledger-amt--sealed {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--cream);
+  background: rgba(90, 62, 87, 0.5);
+  border: 1px solid rgba(235, 223, 230, 0.35);
+  border-radius: var(--radius-pill);
+  padding: 4px 12px 4px 10px;
+}
+.dg-seal {
+  width: 9px; height: 9px; border-radius: 2px;
+  background: var(--cream);
+  box-shadow: 0 0 8px rgba(243, 233, 221, 0.6);
+  display: inline-block;
+}
+.dg-caption {
+  margin-top: 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: rgba(243, 233, 221, 0.6);
+  font-style: italic;
+  font-family: var(--font-serif);
+}
+
+/* (b) Three-layer flow diagram */
+.dg--flow { max-width: 520px; display: flex; flex-direction: column; }
+.dg-flowcell { display: flex; flex-direction: column; align-items: center; }
+.dg-node {
+  width: 100%;
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid var(--red-brand);
+  border-radius: var(--radius-sm);
+  padding: 16px 20px;
+  box-shadow: 0 12px 28px rgba(14, 6, 5, 0.28);
+}
+.dg-node--sealed { border-left-color: var(--hidden); }
+.dg-node-top {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+}
+.dg-node-name {
+  font-family: var(--font-serif); font-weight: 600; font-size: 20px; color: var(--ink);
+}
+.dg-node-tag {
+  font-family: var(--font-ui); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.9px; text-transform: uppercase; white-space: nowrap;
+}
+.dg-node-tag--ours { color: var(--red-brand); }
+.dg-node-tag--sealed { color: var(--hidden); }
+.dg-node-desc { margin-top: 7px; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.dg-flow-arrow {
+  display: flex; flex-direction: column; align-items: center; padding: 6px 0;
+}
+.dg-flow-line {
+  width: 1.5px; height: 22px;
+  background: linear-gradient(180deg, rgba(243, 233, 221, 0.2), rgba(243, 233, 221, 0.55));
+}
+.dg-flow-head {
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 7px solid rgba(243, 233, 221, 0.6);
+  margin-top: -1px;
+}
+
+/* (c) Rate diagram — flat sealed bars vs a rising public rate */
+.dg--rate {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: clamp(20px, 4vw, 44px);
+  max-width: 600px;
+  align-items: end;
+}
+.dg-rate-col { display: flex; flex-direction: column; gap: 14px; }
+.dg-rate-label {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 700;
+  letter-spacing: 1.2px; text-transform: uppercase; color: rgba(243, 233, 221, 0.6);
+}
+.dg-rate-bars {
+  display: flex; align-items: flex-end; gap: 10px; height: 120px;
+  padding: 12px 14px;
+  background: rgba(14, 6, 5, 0.22);
+  border: 1px solid rgba(243, 233, 221, 0.12);
+  border-radius: var(--radius-sm);
+}
+.dg-rate-bar {
+  flex: 1;
+  height: 64px; /* all equal — the point: nothing changes */
+  background: rgba(90, 62, 87, 0.5);
+  border: 1px solid rgba(235, 223, 230, 0.3);
+  border-radius: 4px 4px 0 0;
+  position: relative;
+}
+.dg-rate-lock {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  width: 7px; height: 7px; border-radius: 1.5px;
+  background: rgba(243, 233, 221, 0.7);
+}
+.dg-rate-svg {
+  width: 100%; height: 120px; display: block;
+  background: rgba(14, 6, 5, 0.22);
+  border: 1px solid rgba(243, 233, 221, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 0;
+}
+.dg-rate-foot {
+  font-family: var(--font-ui); font-size: 11.5px; font-weight: 600;
+  letter-spacing: 0.3px; color: rgba(243, 233, 221, 0.55);
+}
+
+/* --- LIFECYCLE: numbered editorial list, not cards -------------------------- */
+.sc__life {
+  margin-top: clamp(28px, 4vh, 44px);
+  counter-reset: sclife;
+  list-style: none;
+  padding: 0;
+  max-width: 600px;
+}
+.sc__life-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 20px;
+  padding: 20px 0;
+  border-top: 1px solid rgba(243, 233, 221, 0.12);
+}
+.sc__life-step:first-child { border-top: none; }
+.sc__life-step::before {
+  counter-increment: sclife;
+  content: counter(sclife);
+  font-family: var(--font-serif);
+  font-weight: 600;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--cream);
+  opacity: 0.82;
+  width: 1.4ch;
+  text-align: right;
+}
+.sc__life-step h3 {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--cream);
+}
+.sc__life-step p {
+  margin-top: 6px;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--cream);
+  opacity: 0.8;
+}
+
+/* --- CLOSING ---------------------------------------------------------------- */
+.sc__sec--close { text-align: center; }
+.sc__closingLine {
+  font-family: var(--font-serif);
+  font-size: clamp(24px, 3.6vw, 38px);
+  font-weight: 500;
+  line-height: 1.22;
+  color: var(--cream);
+  max-width: 22ch;
+  margin: 0 auto;
+  text-shadow: 0 2px 18px rgba(13, 10, 13, 0.3);
+}
+.sc__closingLinks {
+  margin-top: clamp(28px, 5vh, 44px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(18px, 3vw, 30px);
+  flex-wrap: wrap;
+}
+.sc__closingLinks .sg-btn { text-decoration: none; }
+.sc__ghostlink {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--cream-dim);
+}
+.sc__ghostlink:hover { color: var(--cream); text-decoration: none; }
+.sc__sigil {
+  width: clamp(72px, 10vw, 110px);
+  height: auto;
+  margin: clamp(44px, 7vh, 72px) auto 0;
+  display: block;
+  opacity: 0.5;
+  filter: drop-shadow(0 8px 24px rgba(14, 6, 5, 0.4));
+}
+
+/* --- Responsive ------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .sc__bar { padding: 12px 18px; }
+  .sc__launch { padding: 8px 13px; font-size: 13px; }
+  .dg--rate { grid-template-columns: 1fr; }
+}
+
+/* --- Reduced motion: no choreography, content shown directly ---------------- */
+@media (prefers-reduced-motion: reduce) {
+  .sc__stage { height: auto; }
+  .sc__sticky { position: static; height: auto; min-height: 92vh; padding: 90px 0 40px; }
+  .sc__hero { transform: none !important; }
+  .sc__heroText { opacity: 1 !important; transform: none !important; }
+  .sc__scrollcue { display: none; }
+  .sc__paper { transform: none !important; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -809,3 +1233,246 @@ button:not(.primary) .spinner { border: 2px solid rgba(196,28,36,0.3); border-to
 
 /* CTA row + closing meta reuse .doc__cta / .doc__meta from section 13. */
 .doc__closing { margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--line); }
+
+/* ===========================================================================
+   15. TREASURER DEMO  (.app) — the live demo, rebuilt as calm editorial
+       sections on the real red paper. Each step is a quiet sheet with a
+       serif kicker, a plain sentence, and the real on-chain result. Scroll
+       choreography (reveal + paper parallax) is driven in JS (Safari-safe),
+       and is skipped entirely under prefers-reduced-motion.
+       =========================================================================== */
+.app {
+  position: relative;
+  min-height: 100vh;
+  --bgY: 0px;
+}
+
+/* Fixed paper + wash, same real texture as the landing — never reveals an edge. */
+.app__paper {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-color: var(--red-mid);
+  background-image: url("/brand/paper-fine.jpg");
+  background-repeat: repeat;
+  background-size: 300px 300px;
+  /* Parallax via background-position on an infinite tile — never reveals an edge. */
+  background-position: center var(--bgY);
+  will-change: background-position;
+}
+.app__wash {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(228, 78, 90, 0.20) 0%, rgba(228, 78, 90, 0) 55%),
+    linear-gradient(180deg, rgba(14, 6, 5, 0.05) 0%, rgba(14, 6, 5, 0) 22%, rgba(14, 6, 5, 0.10) 72%, rgba(14, 6, 5, 0.22) 100%),
+    radial-gradient(130% 120% at 50% 46%, rgba(14, 6, 5, 0) 54%, rgba(14, 6, 5, 0.24) 100%);
+}
+
+/* Persistent top bar: black centaur mark (home) + network + connect/wallet. */
+.app__bar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px clamp(16px, 5vw, 48px);
+  background: rgba(150, 18, 24, 0.42);
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  border-bottom: 1px solid rgba(243, 233, 221, 0.14);
+  box-shadow: 0 8px 30px rgba(14, 6, 5, 0.18);
+}
+.app__home { display: inline-flex; align-items: center; gap: 11px; min-width: 0; }
+.app__home:hover { text-decoration: none; opacity: 0.9; }
+.app__bar-mark {
+  width: 28px; height: auto;
+  filter: drop-shadow(0 1px 5px rgba(14, 6, 5, 0.4));
+}
+.app__bar-word {
+  font-family: var(--font-serif); font-weight: 600; font-size: 20px;
+  letter-spacing: 0.4px; color: var(--cream);
+  text-shadow: 0 1px 8px rgba(14, 6, 5, 0.35);
+}
+.app__bar-actions { display: flex; align-items: center; gap: clamp(8px, 1.4vw, 14px); flex-wrap: wrap; justify-content: flex-end; }
+
+/* The document column sits above the fixed paper. */
+.app__doc {
+  position: relative;
+  z-index: 10;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: calc(64px + clamp(28px, 7vh, 72px)) clamp(18px, 5vw, 40px) clamp(80px, 12vh, 140px);
+}
+
+/* --- Masthead: the one serif headline, on the red paper. ------------------- */
+.app__masthead { padding-bottom: clamp(20px, 5vh, 46px); }
+.app__eyebrow {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 700;
+  letter-spacing: 2px; text-transform: uppercase;
+  color: var(--cream); opacity: 0.72;
+  display: inline-flex; align-items: center; gap: 12px; margin-bottom: 18px;
+}
+.app__eyebrow::before { content: ""; width: 28px; height: 1px; background: rgba(243,233,221,0.45); }
+.app__title {
+  font-family: var(--font-serif); font-weight: 500; color: var(--cream);
+  font-size: clamp(38px, 6.4vw, 72px); line-height: 1.02; letter-spacing: 0.3px;
+  max-width: 16ch; text-shadow: 0 2px 22px rgba(13, 10, 13, 0.32);
+}
+.app__lede {
+  margin-top: 22px; font-family: var(--font-ui);
+  font-size: clamp(15px, 1.7vw, 18px); line-height: 1.62;
+  color: var(--cream); opacity: 0.86; max-width: 54ch;
+}
+
+/* --- Banners on the red (wallet / chain errors) ---------------------------- */
+.app__banner {
+  margin-top: 20px;
+  border: 1px solid rgba(243,233,221,0.3); border-left: 4px solid var(--gold);
+  background: rgba(14, 6, 5, 0.30); color: var(--cream);
+  border-radius: var(--radius-sm); padding: 12px 16px; font-size: 13.5px; line-height: 1.55;
+}
+
+/* --- Section rhythm: quiet hairline between numbered steps. ---------------- */
+.app__sec {
+  padding: clamp(44px, 8vh, 86px) 0 0;
+  /* reveal choreography driven in JS via the .is-in class */
+  opacity: 0;
+  transform: translateY(26px);
+  transition: opacity 620ms cubic-bezier(0.22,0.61,0.36,1), transform 620ms cubic-bezier(0.22,0.61,0.36,1);
+}
+.app__sec.is-in { opacity: 1; transform: none; }
+.app__sechead { display: flex; align-items: baseline; gap: 16px; }
+.app__secnum {
+  font-family: var(--font-serif); font-weight: 600; font-size: clamp(26px, 3.4vw, 40px);
+  line-height: 1; color: var(--cream); opacity: 0.55; flex: none;
+}
+.app__secmeta { min-width: 0; }
+.app__kicker {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 700;
+  letter-spacing: 1.8px; text-transform: uppercase; color: var(--cream); opacity: 0.7;
+}
+.app__h2 {
+  font-family: var(--font-serif); font-weight: 600; color: var(--cream);
+  font-size: clamp(26px, 3.6vw, 40px); line-height: 1.1; letter-spacing: 0.2px;
+  margin-top: 6px; max-width: 22ch; text-shadow: 0 2px 16px rgba(13, 10, 13, 0.28);
+}
+.app__p {
+  margin-top: 16px; font-family: var(--font-ui);
+  font-size: clamp(14.5px, 1.6vw, 16.5px); line-height: 1.66;
+  color: var(--cream); opacity: 0.84; max-width: 56ch;
+}
+.app__p strong { color: var(--cream); opacity: 1; font-weight: 600; }
+
+/* A thin red-paper divider sigil between sections (the centaur, barely there). */
+.app__sec + .app__sec { border-top: 1px solid rgba(243, 233, 221, 0.12); }
+
+/* --- The action stage inside a section: a single parchment sheet. ---------- */
+.app__stage {
+  margin-top: clamp(22px, 4vh, 34px);
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--emboss); color: var(--ink);
+  padding: clamp(20px, 3vw, 28px);
+}
+.app__stage .sub { color: var(--ink-2); font-size: 14px; margin: 0 0 16px; line-height: 1.55; }
+.app__stage .sub:first-child { margin-top: 0; }
+.app__actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.app__fine { color: var(--ink-mut); font-size: 12.5px; margin-top: 14px; line-height: 1.6; }
+.app__fine .mono { font-size: 0.92em; }
+
+/* --- GLANCE: two panels — sealed holding vs growing public price. ---------- */
+.app__glance { margin-top: clamp(24px, 4vh, 36px); display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 720px) { .app__glance { grid-template-columns: 1fr; } }
+.app__panel {
+  position: relative; overflow: hidden; isolation: isolate;
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: clamp(22px, 3vw, 30px); box-shadow: var(--emboss); color: var(--ink);
+}
+.app__panel::after {
+  content: ""; position: absolute; right: -18px; bottom: -22px;
+  width: 128px; height: 128px; z-index: 0;
+  background: url("/brand/mark-ink.png") no-repeat center / contain;
+  opacity: 0.05; pointer-events: none; filter: saturate(0.6);
+}
+.app__panel > * { position: relative; z-index: 1; }
+.app__panel--sealed { border-color: var(--hidden); border-left: 4px solid var(--hidden); background: linear-gradient(180deg, var(--parchment) 0%, var(--hidden-weak) 190%); }
+.app__panel--value { border-left: 4px solid var(--gold); }
+.app__panel-k { color: var(--ink-mut); font-size: 11.5px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+.app__panel-v {
+  font-family: var(--font-serif); font-size: clamp(38px, 5vw, 52px); font-weight: 600;
+  margin-top: 8px; letter-spacing: 0; line-height: 1.04; color: var(--gold);
+}
+.app__panel--sealed .app__panel-v { color: var(--hidden); }
+.app__panel-note { color: var(--ink-2); font-size: 13px; margin-top: 14px; line-height: 1.55; }
+.app__panel-v.provisional { color: var(--ink-mut); font-size: clamp(22px, 3vw, 26px); }
+.app__commit { font-family: var(--font-mono); font-size: 12px; color: var(--hidden); word-break: break-all; margin-top: 10px; line-height: 1.5; }
+.app__sealed-badge {
+  display: inline-flex; align-items: center; gap: 9px;
+  background: var(--hidden-weak); color: var(--hidden); border: 1px solid var(--hidden);
+  border-radius: var(--radius-pill); padding: 6px 16px;
+  font-family: var(--font-serif); font-size: 26px; font-weight: 600;
+}
+.app__sealed-badge .app__seal-dot { width: 9px; height: 9px; border-radius: 2px; background: var(--hidden); box-shadow: 0 0 8px rgba(90,62,87,0.5); }
+.app__trend {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 12px;
+  font-size: 12px; font-weight: 700; color: var(--good);
+  background: var(--good-weak); padding: 3px 11px; border-radius: var(--radius-pill);
+}
+
+/* --- Eligibility row inside the transfer section. -------------------------- */
+.app__elig { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); margin: 0 0 16px; }
+
+/* --- Done tag on a section head. ------------------------------------------- */
+.app__done {
+  margin-left: 12px; font-family: var(--font-ui); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.6px; color: var(--cream); background: rgba(62,107,79,0.5);
+  border: 1px solid rgba(243,233,221,0.3); border-radius: var(--radius-pill); padding: 3px 11px;
+  align-self: center;
+}
+
+/* --- Under the hood: contracts, on a parchment sheet. ---------------------- */
+.app__contracts { margin-top: clamp(22px, 4vh, 34px); }
+
+/* --- Closing footer on the red. -------------------------------------------- */
+.app__footer {
+  position: relative; z-index: 10;
+  max-width: 860px; margin: clamp(48px, 8vh, 96px) auto 0;
+  padding: 28px clamp(18px, 5vw, 40px) 0; border-top: 1px solid rgba(243, 233, 221, 0.14);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+  font-family: var(--font-ui); font-size: 12.5px; color: var(--cream-dim);
+}
+.app__footer a { color: var(--cream); }
+.app__footer-sig { display: inline-flex; align-items: center; gap: 9px; }
+.app__footer-sig img { opacity: 0.85; }
+.app__footer-sig span { font-family: var(--font-serif); font-size: 17px; color: var(--cream); }
+.app__footer-caveat { width: 100%; opacity: 0.66; line-height: 1.55; margin-top: 4px; }
+
+/* --- Wallet pill on the red. ----------------------------------------------- */
+.app__wallet {
+  font-family: var(--font-ui); font-size: 13px; font-weight: 600; color: var(--cream);
+  border: 1px solid rgba(243,233,221,0.32); border-radius: var(--radius-pill);
+  padding: 7px 14px; background: rgba(13,10,13,0.2);
+}
+.app__net {
+  font-size: 11px; font-weight: 600; color: var(--cream); border: 1px solid rgba(243,233,221,0.28);
+  border-radius: var(--radius-pill); padding: 5px 11px; background: rgba(13,10,13,0.16);
+}
+.app__net .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #7FB58F; margin-right: 6px; vertical-align: middle; box-shadow: 0 0 6px rgba(127,181,143,0.8); }
+
+@media (max-width: 560px) {
+  .app__doc { padding-left: 16px; padding-right: 16px; }
+  .app__bar { padding: 12px 16px; }
+  .app__bar-word { display: none; }
+}
+
+/* Reduced motion: no reveal choreography, no parallax — content shown directly. */
+@media (prefers-reduced-motion: reduce) {
+  .app__sec { opacity: 1 !important; transform: none !important; transition: none; }
+  .app__paper { transform: none !important; }
+}
