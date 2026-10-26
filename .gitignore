@@ -22,3 +22,9 @@ reference/
 *.log
 dist/
 .next/
+
+# Vercel + QA artifacts
+.vercel/
+**/.vercel/
+.qa/
+**/.qa/

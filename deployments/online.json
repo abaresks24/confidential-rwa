@@ -1,0 +1,35 @@
+{
+  "updatedAt": "2026-10-26T04:17:04Z",
+  "frontend": {
+    "provider": "vercel",
+    "project": "sagittaire-fi",
+    "org": "abaresks24s-projects",
+    "productionUrl": "https://sagittaire-fi.vercel.app",
+    "latestDeployment": "https://sagittaire-804qrtegf-abaresks24s-projects.vercel.app",
+    "deploymentId": "dpl_C3Z8u3XQQr7ddktekUJ1gLAWG7ky",
+    "framework": "nextjs",
+    "env": {
+      "NEXT_PUBLIC_BACKEND_URL": "https://confidential-rwa-api.fly.dev",
+      "VITE_BACKEND_URL": "https://confidential-rwa-api.fly.dev"
+    },
+    "envType": "encrypted (was 'sensitive' which read back empty; recreated so values are verifiable)",
+    "health": {
+      "root": "HTTP 200",
+      "title": "Sagittaire — Confidential yield-bearing RWAs on Stellar",
+      "docs": "HTTP 200",
+      "app": "HTTP 200"
+    }
+  },
+  "backend": {
+    "provider": "fly",
+    "app": "confidential-rwa-api",
+    "region": "cdg",
+    "url": "https://confidential-rwa-api.fly.dev",
+    "healthEndpoint": "https://confidential-rwa-api.fly.dev/health",
+    "health": "HTTP 200 {\"ok\":true,\"service\":\"confidential-rwa-api\"}",
+    "cors": {
+      "ALLOWED_ORIGIN": "https://sagittaire-fi.vercel.app",
+      "preflightOptions": "HTTP 204"
+    }
+  }
+}

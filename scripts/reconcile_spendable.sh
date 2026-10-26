@@ -1,78 +1,78 @@
 #!/usr/bin/env bash
 # =============================================================================
-# reconcile_spendable.sh <onchain_commit_128hex> <vk_hex> <sigma_hex> \
-#                        <conf_dep> [cached_v] [cached_r]
+# reconcile_spendable.sh <onchain_commit_128hex> <vk_hex> <sigma_hex> [step]
 #
 # RE-SEED / self-heal the sender's spendable opening (v, r) by RECONCILING it
-# against the LIVE on-chain spendable_commitment. The cached (v, r) in
-# out/transfer_state is treated as a HINT, never as ground truth: this script
-# derives the opening that actually opens the on-chain point and prints it.
+# against the LIVE on-chain spendable_commitment. Any cached (v, r) in
+# out/transfer_state is only a hint and is NEVER trusted: this script derives
+# the opening that actually opens the on-chain point, in ONE circuit run.
 #
 # Why this is possible (and honest): every spendable state this e2e can produce
 # has a blinding r that is one of exactly two deterministic values —
 #   * r = 0                           (pure zero-blinding deposits, never transferred)
 #   * r = derive_spend_r(vk, sigma)   (the new-spendable blinding after a transfer
 #                                       with this fixed sigma; see lib T10/W5/S9)
-# and a plaintext v that is a sum of the fixed round deposit/transfer amounts
-# this script walks. So (v, r) is fully RECOVERABLE from chain without any
-# secret beyond the sender's own vk — no fabrication, no stale-cache dependence.
+# and a plaintext v that is a multiple of the fixed round deposit/transfer step.
+# prep_reconcile walks that grid in-circuit, recomputing commit(v, r) with the
+# EXACT OZ Pedersen gadget, and returns the (v, r) that matches the real
+# on-chain point. No secret beyond the sender's own vk — no fabrication, no
+# stale-cache dependence.
 #
 # Output (stdout, one line): "<v_dec> <r>"  where r is "0" or "0x..."  — the
 # opening PROVEN to satisfy commit(v, r) == on-chain spendable_commitment.
-# Exits non-zero (and prints nothing on stdout) if no opening reconciles, so the
-# caller can fail loudly instead of building an unsatisfiable witness.
+# Exits non-zero (prints nothing on stdout) if nothing reconciles, so the caller
+# fails loudly instead of building an unsatisfiable witness.
 # =============================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+REF_CIRCUITS="$ROOT/reference/stellar-contracts/packages/confidential/circuits"
 
-ONCHAIN="${1:?usage: reconcile_spendable.sh <onchain> <vk> <sigma> <conf_dep> [cached_v] [cached_r]}"
-VK="${2:?}"; SIGMA="${3:?}"; CONF_DEP="${4:?}"
-CACHED_V="${5:-}"; CACHED_R="${6:-}"
+ONCHAIN="${1:?usage: reconcile_spendable.sh <onchain> <vk> <sigma> [step]}"
+VK="${2:?}"; SIGMA="${3:?}"; STEP="${4:-100000000}"
 ONCHAIN="${ONCHAIN#0x}"
 
 IDENTITY64="0000000000000000000000000000000000000000000000000000000000000000"
 IDENTITY128="${IDENTITY64}${IDENTITY64}"
-
-# r=0 opens the identity point only for v=0; the token stores a 64-byte zero
-# blob for an unset spendable. Treat that as the (0,0) opening directly.
+# The token stores a 64-byte zero blob for an unset spendable → opening (0, 0).
 if [ "$ONCHAIN" = "$IDENTITY128" ]; then
   echo "0 0"; exit 0
 fi
 
-# R_FIXED = derive_spend_r(vk, sigma): the only non-zero blinding this e2e makes.
-R_FIXED="$(bash "$HERE/derive_spend_r.sh" "$VK" "$SIGMA")"
+CX="0x${ONCHAIN:0:64}"
+CY="0x${ONCHAIN:64:64}"
 
-# Candidate v's: the cached hint, plus the deterministic round-amount grid this
-# e2e can reach. Deposits are multiples of 1e8 (CONF_DEP and top-ups) and the
-# transfer subtracts 4e8; across a handful of runs the spendable v stays within
-# this grid. We try the hint first (fast path), then the grid.
-tryv() {  # <v> <r> ; echoes opening + exits 0 on match
-  local v="$1" r="$2"
-  [ -z "$v" ] && return 1
-  local c; c="$(bash "$HERE/commit_vr.sh" "$v" "$r" 2>/dev/null || true)"
-  if [ "$c" = "$ONCHAIN" ]; then echo "$v $r"; exit 0; fi
-  return 1
-}
+source "$HERE/../circuits/toolchain.sh" >/dev/null 2>&1
 
-# 1) fast path: the cached hint, with its cached r and with R_FIXED.
-if [ -n "$CACHED_V" ]; then
-  tryv "$CACHED_V" "${CACHED_R:-0}" || true
-  tryv "$CACHED_V" "$R_FIXED" || true
-  tryv "$CACHED_V" 0 || true
+WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+cp -R "$REF_CIRCUITS"/. "$WORK"/
+cp -R "$ROOT/circuits/prep_reconcile" "$WORK/prep_reconcile"
+node -e 'const fs=require("fs");const p=process.argv[1]+"/Nargo.toml";let t=fs.readFileSync(p,"utf8");if(!/"prep_reconcile"/.test(t))t=t.replace(/members = \[/,"members = [\n    \"prep_reconcile\",");fs.writeFileSync(p,t);' "$WORK"
+cat > "$WORK/prep_reconcile/Prover.toml" <<EOF
+cx = "$CX"
+cy = "$CY"
+vk = "$VK"
+sigma = "$SIGMA"
+step = "$STEP"
+EOF
+
+OUT="$( cd "$WORK" && nargo execute --package prep_reconcile prep_reconcile_witness 2>&1 )"
+echo "$OUT" | grep -q "successfully solved" || { echo "ERROR: prep_reconcile did not solve" >&2; echo "$OUT" >&2; exit 1; }
+
+# Circuit output: [found, v, r]
+read -r FOUND V R <<<"$(printf '%s' "$OUT" | node -e '
+  const d=require("fs").readFileSync(0,"utf8");
+  const m=d.match(/Circuit output:\s*\[([^\]]*)\]/);
+  if(!m){console.error("no Circuit output");process.exit(1);}
+  const v=[...m[1].matchAll(/0x[0-9a-fA-F]+/g)].map(x=>x[0]);
+  const found=BigInt(v[0]).toString();
+  const vv=BigInt(v[1]).toString();
+  const rr=BigInt(v[2])===0n ? "0" : v[2];
+  process.stdout.write(found+" "+vv+" "+rr);
+')"
+
+if [ "$FOUND" != "1" ]; then
+  echo "reconcile_spendable: no opening reconciles with on-chain spendable $ONCHAIN (grid step=$STEP). Widen the grid in prep_reconcile (N) if a run deposited beyond it." >&2
+  exit 1
 fi
-
-# 2) deterministic grid. Both blindings, v in [0 .. 3e9] stepping 1e8 (covers
-# many runs of CONF_DEP deposits and XFER=4e8 spends). Zero-blinding first
-# (pure-deposit states), then R_FIXED (post-transfer states).
-STEP=100000000
-MAXV=3000000000
-for R in 0 "$R_FIXED"; do
-  v=0
-  while [ "$v" -le "$MAXV" ]; do
-    tryv "$v" "$R" || true
-    v=$(( v + STEP ))
-  done
-done
-
-echo "reconcile_spendable: no opening reconciles with on-chain spendable $ONCHAIN" >&2
-exit 1
+echo "$V $R"

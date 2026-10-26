@@ -1,0 +1,19 @@
+# Build artifacts and deps — rebuilt / reinstalled inside the image.
+**/node_modules
+**/target
+out
+web/dist
+web/.next
+web/_vite_legacy
+
+# The image sparse-clones its own confidential subtree of OZ stellar-contracts;
+# the local full clone (~2.3G) must never enter the build context.
+reference
+
+# VCS / env / local noise
+.git
+**/.env
+**/.env.*
+**/.DS_Store
+**/*.log
+contracts/target

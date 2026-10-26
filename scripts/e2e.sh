@@ -181,7 +181,11 @@ exp_spk=$(node -e 'const r=require(process.argv[1]);const s=h=>h.replace(/^0x/,"
                         || bad "spending_public_key mismatch (on=$spk exp=$exp_spk)"
 
 hdr "B3. alice CONFIDENTIAL DEPOSIT — commit a hidden balance (Pedersen) on-chain"
-CONF_DEP=300000000
+# Deposit exactly the B6 transfer amount (XFER=4e8) so each run's net confidential
+# flow is zero: alice's spendable balance stays constant run-to-run, keeping the
+# flow re-runnable indefinitely without her spendable drifting out of the
+# reconcile grid (prep_reconcile walks v up to 30*1e8).
+CONF_DEP=400000000
 # ensure alice has >= CONF_DEP wsFUND shares to deposit confidentially. wsFUND
 # shares are fewer than rtFUND when the exchange rate > 1, so size the rtFUND
 # deposit by the live rate (rate scaled by 1e7) with headroom.
@@ -273,30 +277,71 @@ onchain_aud=$(call "$AUDITOR" get_key --auditor_id "$AUD_ID")
 [ "$onchain_aud" = "$AUD_H" ] && ok "on-chain auditor key == H (sk_aud=1, decryptable)" \
                               || bad "auditor key != H — rotate auditor_id $AUD_ID to H (scripts/deploy.sh AUDITOR_PK)"
 
-# Fold alice's receiving (the B3 zero-blinding deposit) into spendable so she
-# has a spendable balance to transfer from, and track her spendable OPENING
-# (v, r). merge adds the zero-blinding deposit point, so the blinding r is
-# unchanged and v grows by the just-deposited receiving total.
+# -----------------------------------------------------------------------------
+# RE-SEED alice's spendable opening (v, r) FROM CHAIN — the re-runnability fix.
+#
+# The transfer witness's T3 constraint requires C_spend == alice's LIVE on-chain
+# spendable_commitment. A cached opening in out/transfer_state desyncs the
+# moment a prior transfer moved her on-chain balance (or a prior run failed
+# mid-flight), producing an unsatisfiable witness and Error(Contract,#3506).
+#
+# So we do NOT trust the cache. We read the LIVE spendable_commitment and
+# reconcile the opening that actually opens it (reconcile_spendable.sh walks the
+# deterministic v-grid at r ∈ {0, derive_spend_r(vk, SIGMA)} in one circuit run
+# — the only states this e2e can reach). The cache is passed only as telemetry.
+# This makes the transfer succeed from ANY current on-chain state.
+# -----------------------------------------------------------------------------
+SIGMA_X="0x9"                     # FIXED sigma -> post-transfer blinding is deterministic/reconcilable
+ALICE_VK="0x179835ffc2237e78c6bcee7ce26fedbb5dfc18cd66d7a16216889043a67f40bb"  # vk_from_sk(0x2a, addr_f(token))
 spend_v_file="$ST_DIR/alice_spend_v"; spend_r_file="$ST_DIR/alice_spend_r"
-prev_v=$( [ -f "$spend_v_file" ] && cat "$spend_v_file" || echo 0 )
-prev_r=$( [ -f "$spend_r_file" ] && cat "$spend_r_file" || echo 0 )
-# B4 just VERIFIED on-chain that alice's receiving_commitment == new_total*G
-# (zero-blinding deposits), so new_total is the exact plaintext now in receiving.
+cached_v=$( [ -f "$spend_v_file" ] && cat "$spend_v_file" || echo "(none)" )
+
+# receiving holds the B3 zero-blinding deposit (plaintext new_total, verified in
+# B4). merge folds it into spendable, preserving the blinding and adding its
+# plaintext to v. Read the PRE-merge spendable and reconcile its opening.
 recv_plain=$new_total
-echo "  merging alice receiving ($recv_plain, zero-blinding) into spendable (prev spendable v=$prev_v)"
+alice_spend_premerge=$(conf_field "$ALICE" spendable_commitment)
+echo "  re-seeding alice spendable opening from chain (cache hint v=$cached_v, NOT trusted)"
+echo "    live pre-merge spendable_commitment = ${alice_spend_premerge:-<empty/identity>}:0:16..."
+if recon=$(bash "$HERE/reconcile_spendable.sh" "${alice_spend_premerge:-0}" "$ALICE_VK" "$SIGMA_X" 2>"$AC_DIR/reconcile.log"); then
+  read -r rec_v rec_r <<<"$recon"
+  ok "re-seeded alice spendable opening FROM CHAIN: v=$rec_v r=$([ "$rec_r" = 0 ] && echo 0 || echo "${rec_r:0:14}...")"
+  if [ "$cached_v" != "$rec_v" ]; then
+    echo "    (self-heal: cached v=$cached_v DIVERGED from chain v=$rec_v — using chain-derived opening)"
+  fi
+else
+  bad "could not reconcile alice's on-chain spendable opening (see $AC_DIR/reconcile.log)"
+  rec_v=0; rec_r=0
+fi
+
+echo "  merging alice receiving ($recv_plain, zero-blinding) into spendable (reconciled pre-merge v=$rec_v)"
 merge_out=$(send "$TOKEN" "$ALICE" merge --account "$ALICE" || true)
 echo "$merge_out" | grep -q "Event: Merge" && ok "alice merge: receiving -> spendable" || bad "merge failed"
 # receiving is now identity; reset the B3/B4 cumulative so the NEXT run starts clean.
 echo 0 > "$TOTAL_FILE"
-spend_v=$(( prev_v + recv_plain ))
-spend_r="$prev_r"
-echo "  alice spendable opening now: v=$spend_v r=${spend_r:0:14}..."
+# merge preserves the blinding and adds the zero-blinding deposit's plaintext.
+spend_v=$(( rec_v + recv_plain ))
+spend_r="$rec_r"
+echo "  alice spendable opening now (post-merge, chain-reconciled): v=$spend_v r=$([ "$spend_r" = 0 ] && echo 0 || echo "${spend_r:0:14}...")"
 [ "$spend_v" -ge "$XFER" ] || bad "alice spendable $spend_v < transfer $XFER"
 
+# Verify the reconciled+merged opening reproduces the LIVE post-merge spendable
+# BEFORE we spend real proof time — this is the exact T3 relation the circuit
+# enforces; if it fails here, the witness would be unsatisfiable (#3506).
+alice_spend_postmerge=$(conf_field "$ALICE" spendable_commitment)
+recomputed_spend=$(bash "$HERE/commit_vr.sh" "$spend_v" "${spend_r:-0}")
+if [ "$recomputed_spend" = "$alice_spend_postmerge" ]; then
+  ok "reconciled opening MATCHES live on-chain spendable (commit(v,r)==chain; witness T3 will hold)"
+else
+  bad "reconciled opening does NOT match on-chain spendable — refusing to build an unsatisfiable witness"
+  echo "    commit(v=$spend_v,r)=${recomputed_spend:0:16}...  on-chain=${alice_spend_postmerge:0:16}..."
+fi
+
 # Build the REAL transfer witness + proof + payload (we emit it ourselves).
+# FIXED sigma=$SIGMA_X so the new spendable blinding is reconcilable next run.
 echo "  building transfer witness/proof (prep_transfer + prove.sh transfer) ..."
 bash "$HERE/make_transfer.sh" "$TOKEN" "$ALICE_ADDR" "$CAROL_ADDR" "$spend_v" "$XFER" \
-     "$SENDER_SK" "$CAROL_PVK" "$AUD_H" "$AC_DIR" 0x9 0x$(openssl rand -hex 6) "$spend_r" \
+     "$SENDER_SK" "$CAROL_PVK" "$AUD_H" "$AC_DIR" "$SIGMA_X" 0x$(openssl rand -hex 6) "$spend_r" \
      >"$AC_DIR/make.log" 2>&1 \
   && ok "real 14592-byte transfer proof generated (keccak oracle, non-zk)" \
   || { bad "make_transfer failed (see $AC_DIR/make.log)"; tail -3 "$AC_DIR/make.log"; }
@@ -315,52 +360,84 @@ else
   bad "expected reject for bob; got:"; echo "$out_bob" | grep -iE "Error\(Contract|Success" | head -1
 fi
 
-# B6b — the real transfer to eligible carol must SUCCEED.
+# -----------------------------------------------------------------------------
+# B6b — the real transfer to eligible carol must SUCCEED **ON-CHAIN**.
+# HONEST gating: B6b passes only if the tx emits a Transfer event AND both
+# commitments actually moved on-chain this run AND alice's new spendable equals
+# commit(v_new, derive_spend_r(vk, SIGMA)). TRANSFER_LANDED gates B6c — the
+# auditor-decrypt assert must NOT pass off local witness data if the on-chain
+# transfer did not land.
+# -----------------------------------------------------------------------------
+TRANSFER_LANDED=0
 echo "  B6b: confidential_transfer alice -> carol (eligible)"
 out_x=$(send "$TOKEN" "$ALICE" confidential_transfer --from "$ALICE" --to "$CAROL" --data "$DATA_X" || true)
-if echo "$out_x" | grep -q "Event: Transfer"; then
-  ok "REAL confidential transfer ACCEPTED on-chain (UltraHonk proof verified)"
-else
-  bad "transfer failed:"; echo "$out_x" | grep -iE "Error\(Contract" | head -1
-fi
+xfer_event=0
+echo "$out_x" | grep -q "Event: Transfer" && xfer_event=1
 
-# Commitments must have UPDATED to non-identity, non-plaintext points.
 alice_spend_after=$(conf_field "$ALICE" spendable_commitment)
 carol_recv_after=$(conf_field "$CAROL" receiving_commitment)
 xfer_times_g=$(bash "$HERE/commit_point.sh" "$XFER")
-[ "$alice_spend_after" != "$IDENTITY64" ] && [ "$alice_spend_after" != "$alice_spend_before" ] \
-  && ok "alice spendable_commitment updated to a new non-identity Pedersen point" \
-  || bad "alice spendable did not update"
-[ "$carol_recv_after" != "$IDENTITY64" ] && [ "$carol_recv_after" != "$carol_recv_before" ] \
-  && ok "carol receiving_commitment updated to a new non-identity Pedersen point" \
-  || bad "carol receiving did not update"
-# the transfer commitment delta added to carol is C_transfer = v_t*G + r_t*H with
-# r_t != 0, so it is NOT the plaintext amount*G.
-c_transfer=$(node -e 'const t=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(t.c_transfer)' "$AC_DIR/transfer.json")
-[ "$c_transfer" != "$xfer_times_g" ] \
-  && ok "transfer commitment is HIDDEN (C_transfer != ${XFER}*G — non-zero blinding, amount not in plaintext)" \
-  || bad "transfer commitment leaks plaintext amount"
+
+# The exact on-chain spendable alice MUST have after a successful transfer:
+# commit(v_new, R_FIXED) with v_new = spend_v - XFER, R_FIXED the fixed-sigma blinding.
+exp_new=$(( spend_v - XFER ))
+R_FIXED=$(bash "$HERE/derive_spend_r.sh" "$ALICE_VK" "$SIGMA_X")
+exp_spend_after=$(bash "$HERE/commit_vr.sh" "$exp_new" "$R_FIXED")
+
+alice_moved=0; [ -n "$alice_spend_after" ] && [ "$alice_spend_after" != "$IDENTITY64" ] && [ "$alice_spend_after" != "$alice_spend_before" ] && alice_moved=1
+carol_moved=0; [ -n "$carol_recv_after" ] && [ "$carol_recv_after" != "$IDENTITY64" ] && [ "$carol_recv_after" != "$carol_recv_before" ] && carol_moved=1
+alice_exact=0; [ "$alice_spend_after" = "$exp_spend_after" ] && alice_exact=1
+
+if [ "$xfer_event" = 1 ] && [ "$alice_moved" = 1 ] && [ "$carol_moved" = 1 ] && [ "$alice_exact" = 1 ]; then
+  TRANSFER_LANDED=1
+  ok "REAL confidential transfer LANDED ON-CHAIN (Transfer event; both commitments moved; alice new spendable == commit(v_new,R_fixed))"
+else
+  bad "B6b transfer did NOT land on-chain (event=$xfer_event alice_moved=$alice_moved carol_moved=$carol_moved alice_exact=$alice_exact)"
+  echo "$out_x" | grep -iE "Error\(Contract" | head -1
+fi
+
+# These checks are only meaningful once the transfer landed.
+if [ "$TRANSFER_LANDED" = 1 ]; then
+  ok "alice spendable_commitment updated to a new non-identity Pedersen point"
+  ok "carol receiving_commitment updated to a new non-identity Pedersen point"
+  # the transfer commitment delta added to carol is C_transfer = v_t*G + r_t*H with
+  # r_t != 0, so it is NOT the plaintext amount*G.
+  c_transfer=$(node -e 'const t=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(t.c_transfer)' "$AC_DIR/transfer.json")
+  [ "$c_transfer" != "$xfer_times_g" ] \
+    && ok "transfer commitment is HIDDEN (C_transfer != ${XFER}*G — non-zero blinding, amount not in plaintext)" \
+    || bad "transfer commitment leaks plaintext amount"
+else
+  bad "skipping on-chain commitment-movement asserts — transfer did not land"
+fi
 
 hdr "B6c. AUDITOR decrypts BOTH channels to the hidden transfer amount"
-dec=$(bash "$HERE/auditor_decrypt.sh" "$AC_DIR/transfer.json" 1 2>/dev/null)
-read -r v_recip v_sender v_new_dec <<<"$dec"
-echo "  auditor (sk_aud=1) recovered: recipient-channel=$v_recip  sender-channel=$v_sender  sender-new-balance=$v_new_dec"
-[ "$v_recip" = "$XFER" ]  && ok "auditor RECIPIENT channel decrypts to the hidden amount ($XFER)" \
-                          || bad "recipient channel decrypt mismatch ($v_recip != $XFER)"
-[ "$v_sender" = "$XFER" ] && ok "auditor SENDER channel decrypts to the hidden amount ($XFER)" \
-                          || bad "sender channel decrypt mismatch ($v_sender != $XFER)"
-exp_new=$(( spend_v - XFER ))
-[ "$v_new_dec" = "$exp_new" ] && ok "auditor recovers alice's new confidential balance ($exp_new)" \
-                              || bad "new-balance decrypt mismatch ($v_new_dec != $exp_new)"
+# HONEST gating: only decrypt/assert if the on-chain transfer actually landed.
+# Decrypting the locally-built witness ciphertexts while the chain did NOT move
+# would be a dishonest pass — so if B6b failed, B6c FAILS too.
+if [ "$TRANSFER_LANDED" != 1 ]; then
+  bad "B6c SKIPPED/FAILED — on-chain transfer did not land, refusing to decrypt local-only witness as if it were a real transfer"
+else
+  dec=$(bash "$HERE/auditor_decrypt.sh" "$AC_DIR/transfer.json" 1 2>/dev/null)
+  read -r v_recip v_sender v_new_dec <<<"$dec"
+  echo "  auditor (sk_aud=1) recovered: recipient-channel=$v_recip  sender-channel=$v_sender  sender-new-balance=$v_new_dec"
+  [ "$v_recip" = "$XFER" ]  && ok "auditor RECIPIENT channel decrypts to the hidden amount ($XFER)" \
+                            || bad "recipient channel decrypt mismatch ($v_recip != $XFER)"
+  [ "$v_sender" = "$XFER" ] && ok "auditor SENDER channel decrypts to the hidden amount ($XFER)" \
+                            || bad "sender channel decrypt mismatch ($v_sender != $XFER)"
+  [ "$v_new_dec" = "$exp_new" ] && ok "auditor recovers alice's new confidential balance ($exp_new)" \
+                                || bad "new-balance decrypt mismatch ($v_new_dec != $exp_new)"
 
-# persist alice's updated spendable opening for the next run.
-node -e '
-  const t=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
-  const fs=require("fs");
-  fs.writeFileSync(process.argv[2], t.openings.v_new);
-  fs.writeFileSync(process.argv[3], t.openings.r_new);
-' "$AC_DIR/transfer.json" "$spend_v_file" "$spend_r_file"
-echo "  persisted alice spendable opening for next run: v=$(cat "$spend_v_file") r=$(cut -c1-14 "$spend_r_file")..."
+  # Persist alice's updated spendable opening ONLY after a confirmed on-chain
+  # transfer (so the cache can never advance past chain). Next run re-derives it
+  # from chain anyway; this is just a fast-path hint.
+  node -e '
+    const t=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+    const fs=require("fs");
+    fs.writeFileSync(process.argv[2], t.openings.v_new);
+    fs.writeFileSync(process.argv[3], t.openings.r_new);
+  ' "$AC_DIR/transfer.json" "$spend_v_file" "$spend_r_file"
+  echo "  persisted alice spendable opening hint for next run: v=$(cat "$spend_v_file") r=$(cut -c1-14 "$spend_r_file")..."
+fi
 
 # =============================================================================
 hdr "SUMMARY"

@@ -1,187 +1,811 @@
+/* =============================================================================
+   SAGITTAIRE — Design-system FOUNDATION
+
+   This stylesheet is the single source of truth for the brand. It defines:
+     - the token layer (CSS custom properties sampled from the centaur logo)
+     - the textured red paper background (radial gradient + grain + vignette)
+     - base element styles (classical serif display headings + Inter UI/data)
+     - reusable primitives: .sg-card, .sg-btn, .sg-hero-number, .sg-header
+   The per-screen restyle layers on top of these; legacy class names below are
+   kept + reskinned so the existing page renders in-brand without being rebuilt.
+   ============================================================================= */
+
+/* ---------------------------------------------------------------------------
+   1. TOKENS
+   --------------------------------------------------------------------------- */
 :root {
-  /* Calm, institutional light theme (treasury product, not degen) */
-  --bg: #f4f6fb;
-  --bg-grad: linear-gradient(180deg, #f7f9fc 0%, #eef2f8 100%);
-  --panel: #ffffff;
-  --panel-2: #f7f9fc;
-  --line: #e2e8f2;
-  --line-strong: #cfd8e8;
-  --text: #0f1b32;
-  --text-2: #33425e;
-  --muted: #647089;
-  --accent: #1f4ed8;      /* deep institutional blue */
-  --accent-weak: #e8eefc;
-  --good: #0f7a52;
-  --good-weak: #e4f4ec;
-  --bad: #b42318;
-  --bad-weak: #fdeceb;
-  --warn: #8a5a00;
-  --warn-weak: #fbf1dd;
-  --hidden: #4c3fb0;      /* confidential = muted indigo */
-  --hidden-weak: #ece9fb;
-  --shadow: 0 1px 2px rgba(15,27,50,0.04), 0 8px 24px rgba(15,27,50,0.06);
-  --radius: 14px;
+  /* Brand reds (sampled from the real logo vector) */
+  --red-brand: #C41C24;   /* dominant crimson red */
+  --red-mid:   #D6212A;   /* center of the paper glow */
+  --red-hi:    #E44E5A;   /* highlight */
+  --red-edge:  #B8171C;   /* vignette / edges */
+
+  /* Neutrals + surfaces */
+  --ink:         #0E0605; /* near-black text */
+  --parchment:   #F3E9DD; /* primary card surface */
+  --parchment-2: #EFE4D6; /* secondary / inset surface */
+  --gold:        #B08D57; /* antique gold — hero value accent ONLY */
+
+  /* Derived ink tints (text on parchment) */
+  --ink-2:   #3A3036;     /* secondary text */
+  --ink-mut: #6B5F63;     /* muted / captions */
+
+  /* Derived parchment lines + shadows */
+  --line:        #D9C9B6; /* hairline on parchment */
+  --line-strong: #C3AE97;
+  --parchment-3: #E6D8C6; /* pressed / deepest inset */
+
+  /* Cream tints for text/elements sitting on the red paper */
+  --cream:     #F3E9DD;
+  --cream-mut: #E4C9B9;   /* muted cream on red */
+  --cream-dim: rgba(243,233,221,0.68);
+
+  /* Semantic states (kept legible on parchment, brand-tuned) */
+  --good:      #3E6B4F;   /* sober forest green */
+  --good-weak: #E3EADF;
+  --bad:       #C41C24;   /* reuse brand red for danger */
+  --bad-weak:  #F3DDD8;
+  --warn:      #8A6A2F;   /* darkened gold for warnings */
+  --warn-weak: #EFE3CC;
+  --hidden:    #5A3E57;   /* confidential = muted plum, mythic not neon */
+  --hidden-weak: #EBDFE6;
+
+  /* Letterpress / emboss shadows for parchment surfaces */
+  --emboss:
+    0 1px 0 rgba(255,255,255,0.55) inset,
+    0 -1px 0 rgba(184,23,28,0.06) inset,
+    0 1px 2px rgba(13,10,13,0.10),
+    0 10px 30px rgba(13,10,13,0.22);
+  --emboss-inset:
+    0 1px 2px rgba(13,10,13,0.18) inset,
+    0 1px 0 rgba(255,255,255,0.4);
+
+  /* Radii */
+  --radius:    14px;
+  --radius-sm: 10px;
+  --radius-pill: 999px;
+
+  /* Typography tokens */
+  --font-serif: "Cormorant Garamond", "Spectral", Georgia, "Times New Roman", serif;
+  --font-ui: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Code", monospace;
+
+  /* legacy aliases so the existing page keeps rendering in-brand ------------ */
+  --bg: var(--red-mid);
+  --panel: var(--parchment);
+  --panel-2: var(--parchment-2);
+  --text: var(--ink);
+  --text-2: var(--ink-2);
+  --muted: var(--ink-mut);
+  --accent: var(--red-brand);
+  --accent-weak: var(--parchment-2);
+  --shadow: var(--emboss);
 }
+
+/* ---------------------------------------------------------------------------
+   2. GOOGLE FONTS (classical display serif + Inter)
+   --------------------------------------------------------------------------- */
+@import url("https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,500&family=Inter:wght@400;500;600;700&display=swap");
 
 * { box-sizing: border-box; }
 
+/* ---------------------------------------------------------------------------
+   3. TEXTURED RED PAPER BACKGROUND
+      radial glow (red-mid center -> red-edge) + paper-grain noise + vignette.
+      The grain is an inline fractal-noise SVG (no binary asset needed).
+   --------------------------------------------------------------------------- */
 html, body {
   margin: 0;
   padding: 0;
-  background: var(--bg);
-  background-image: var(--bg-grad);
-  background-attachment: fixed;
-  color: var(--text);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
-  line-height: 1.5;
+  text-rendering: optimizeLegibility;
 }
 
-.wrap { max-width: 920px; margin: 0 auto; padding: 32px 20px 96px; }
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+  background-color: var(--red-mid);
+  background-image:
+    /* grain overlay — fine paper tooth, like the logo backdrop */
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E"),
+    /* subtle vignette — the real logo paper is bright and barely darkens at the edges */
+    radial-gradient(150% 140% at 50% 32%, transparent 64%, rgba(184,23,28,0.16) 100%),
+    /* core glow — bright crimson paper: red-hi lift up top, settling to red-mid/brand,
+       matching the real logo vector (center ~#D6212A/#E44E5A, lighter toward the top) */
+    radial-gradient(135% 115% at 50% 22%, var(--red-hi) 0%, var(--red-mid) 46%, var(--red-brand) 88%, var(--red-edge) 100%);
+  background-attachment: fixed, fixed, fixed;
+  background-repeat: repeat, no-repeat, no-repeat;
+  background-size: 200px 200px, cover, cover;
+  background-blend-mode: soft-light, normal, normal;
+}
 
-/* ---------- Header ---------- */
+/* ---------------------------------------------------------------------------
+   4. BASE ELEMENT STYLES
+   --------------------------------------------------------------------------- */
+h1, h2, h3, h4 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.12;
+  margin: 0;
+  color: inherit;
+}
+p { margin: 0; }
+
+a { color: var(--red-brand); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.mono { font-family: var(--font-mono); }
+
+/* ---------------------------------------------------------------------------
+   5. LAYOUT WRAP
+   --------------------------------------------------------------------------- */
+.wrap { max-width: 920px; margin: 0 auto; padding: 28px 20px 96px; }
+
+/* ---------------------------------------------------------------------------
+   6. HEADER / TOP-BAR  (primitive: .sg-header; legacy header.top reskinned)
+      The centaur mark (cream) + Sagittaire wordmark + tagline, on the red.
+   --------------------------------------------------------------------------- */
+.sg-header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 6px 0 22px; margin-bottom: 20px;
+  border-bottom: 1px solid rgba(243,233,221,0.18);
+}
+.sg-header__mark {
+  flex: none; width: 54px; height: 54px; object-fit: contain;
+  filter: drop-shadow(0 2px 8px rgba(13,10,13,0.35));
+}
+.sg-header__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sg-header__wordmark {
+  font-family: var(--font-serif); font-weight: 600; font-size: 30px;
+  letter-spacing: 0.5px; color: var(--cream); line-height: 1;
+  text-shadow: 0 1px 10px rgba(13,10,13,0.3);
+}
+.sg-header__tagline {
+  font-family: var(--font-ui); font-size: 12.5px; font-weight: 500;
+  letter-spacing: 0.3px; color: var(--cream-dim);
+}
+.sg-header__spacer { flex: 1 1 auto; }
+.sg-header__actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* legacy header.top — the existing page uses this; reskin to sit on the red */
 header.top {
   display: flex; align-items: flex-start; justify-content: space-between;
   gap: 20px; margin-bottom: 24px; flex-wrap: wrap;
 }
 .brand .eyebrow {
-  display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 1.2px;
-  text-transform: uppercase; color: var(--accent); background: var(--accent-weak);
-  padding: 4px 10px; border-radius: 999px; margin-bottom: 10px;
+  display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 1.4px;
+  text-transform: uppercase; color: var(--cream);
+  background: rgba(13,10,13,0.22); border: 1px solid rgba(243,233,221,0.22);
+  padding: 4px 11px; border-radius: var(--radius-pill); margin-bottom: 12px;
 }
-.brand h1 { font-size: 26px; margin: 0; letter-spacing: -0.4px; line-height: 1.15; font-weight: 700; }
-.brand p { margin: 8px 0 0; color: var(--text-2); font-size: 15px; max-width: 46ch; }
-
+.brand h1 {
+  font-family: var(--font-serif); font-size: 40px; margin: 0;
+  letter-spacing: 0; line-height: 1.08; font-weight: 600; color: var(--cream);
+  text-shadow: 0 1px 12px rgba(13,10,13,0.28);
+}
+.brand p { margin: 10px 0 0; color: var(--cream-mut); font-size: 15px; max-width: 48ch; }
 .wallet { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-/* ---------- Buttons ---------- */
-button {
-  font: inherit; cursor: pointer; border: 1px solid var(--line-strong);
-  background: var(--panel); color: var(--text); padding: 10px 16px;
-  border-radius: 10px; transition: 120ms ease; font-weight: 600; font-size: 14px;
-  display: inline-flex; align-items: center; gap: 8px;
+/* ---------------------------------------------------------------------------
+   7. BUTTONS  (primitive: .sg-btn / .sg-btn--primary; legacy button reskinned)
+   --------------------------------------------------------------------------- */
+button, .sg-btn {
+  font: inherit; font-family: var(--font-ui); cursor: pointer;
+  border: 1px solid var(--line-strong);
+  background: var(--parchment); color: var(--ink);
+  padding: 10px 16px; border-radius: var(--radius-sm);
+  transition: 120ms ease; font-weight: 600; font-size: 14px;
+  display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.4) inset, 0 1px 2px rgba(13,10,13,0.12);
 }
-button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-button:focus-visible { outline: 3px solid var(--accent-weak); outline-offset: 1px; border-color: var(--accent); }
-button:disabled { opacity: 0.5; cursor: not-allowed; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover:not(:disabled) { background: #1a43bd; color: #fff; }
-button.ghost { background: transparent; border-color: var(--line-strong); }
-button.danger { border-color: var(--bad); color: var(--bad); background: var(--panel); }
+button:hover:not(:disabled), .sg-btn:hover:not(:disabled) {
+  border-color: var(--red-brand); color: var(--red-brand);
+  background: var(--parchment-2);
+}
+button:focus-visible, .sg-btn:focus-visible {
+  outline: 3px solid rgba(196,28,36,0.28); outline-offset: 1px; border-color: var(--red-brand);
+}
+button:disabled, .sg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+button.primary, .sg-btn--primary {
+  background: var(--red-brand); border-color: var(--red-edge); color: var(--cream);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.18) inset, 0 2px 10px rgba(184,23,28,0.35);
+}
+button.primary:hover:not(:disabled), .sg-btn--primary:hover:not(:disabled) {
+  background: var(--red-edge); color: var(--cream); border-color: var(--red-edge);
+}
+button.ghost { background: rgba(243,233,221,0.08); border-color: rgba(243,233,221,0.3); color: var(--cream); box-shadow: none; }
+button.ghost:hover:not(:disabled) { background: rgba(243,233,221,0.16); color: var(--cream); border-color: var(--cream); }
+button.danger { border-color: var(--bad); color: var(--bad); background: var(--parchment); }
 button.danger:hover:not(:disabled) { background: var(--bad-weak); color: var(--bad); border-color: var(--bad); }
 button[aria-pressed="true"] { background: var(--hidden-weak); border-color: var(--hidden); color: var(--hidden); }
 
-/* ---------- Cards ---------- */
-.card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 22px 24px; margin-top: 16px; box-shadow: var(--shadow);
+/* ---------------------------------------------------------------------------
+   8. CARDS  (primitive: .sg-card; legacy .card reskinned — parchment emboss)
+   --------------------------------------------------------------------------- */
+.card, .sg-card {
+  background:
+    linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px 24px; margin-top: 16px;
+  box-shadow: var(--emboss);
+  color: var(--ink);
 }
 .card-head { display: flex; align-items: center; gap: 12px; }
 .step-num {
   flex: none; width: 30px; height: 30px; border-radius: 8px;
   display: inline-flex; align-items: center; justify-content: center;
-  font-weight: 700; font-size: 14px; background: var(--accent-weak); color: var(--accent);
+  font-family: var(--font-serif); font-weight: 700; font-size: 16px;
+  background: var(--red-brand); color: var(--cream);
+  box-shadow: 0 1px 2px rgba(184,23,28,0.4);
 }
-.card h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -0.2px; }
-.card .sub { color: var(--text-2); font-size: 14px; margin: 10px 0 18px; }
+.card h2 { font-family: var(--font-serif); margin: 0; font-size: 23px; font-weight: 600; letter-spacing: 0; color: var(--ink); }
+.card .sub { color: var(--ink-2); font-size: 14px; margin: 10px 0 18px; }
 
-/* ---------- Hero ---------- */
+/* ---------------------------------------------------------------------------
+   9. HERO  (primitive: .sg-hero-number — serif, gold)
+   --------------------------------------------------------------------------- */
 .hero { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 720px) { .hero { grid-template-columns: 1fr; } }
 
 .stat {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 22px; box-shadow: var(--shadow);
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 24px; box-shadow: var(--emboss);
   position: relative; overflow: hidden;
 }
-.stat.hidden-accent { border-color: var(--hidden); background: linear-gradient(180deg, var(--hidden-weak) 0%, #fff 60%); }
-.stat.value-accent { border-color: var(--good); background: linear-gradient(180deg, var(--good-weak) 0%, #fff 60%); }
-.stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; }
-.stat .v { font-size: 34px; font-weight: 700; margin-top: 8px; letter-spacing: -1px; line-height: 1.1; }
-.stat .note { color: var(--text-2); font-size: 13px; margin-top: 12px; line-height: 1.5; }
+.stat.hidden-accent { border-color: var(--hidden); }
+.stat.hidden-accent::before,
+.stat.value-accent::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
+}
+.stat.hidden-accent::before { background: var(--hidden); }
+.stat.value-accent { border-color: var(--line-strong); }
+.stat.value-accent::before { background: var(--gold); }
+.stat .k { color: var(--ink-mut); font-size: 11.5px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
+
+/* THE hero value/yield number — large, classical serif, antique gold */
+.stat .v, .sg-hero-number {
+  font-family: var(--font-serif); font-size: 46px; font-weight: 600;
+  margin-top: 6px; letter-spacing: 0; line-height: 1.05; color: var(--gold);
+}
+.stat .note { color: var(--ink-2); font-size: 13px; margin-top: 12px; line-height: 1.5; }
 
 .hidden-badge {
   display: inline-flex; align-items: center; gap: 8px;
   background: var(--hidden-weak); color: var(--hidden);
-  border: 1px solid var(--hidden); border-radius: 999px;
-  padding: 6px 14px; font-size: 20px; font-weight: 700; letter-spacing: -0.3px;
+  border: 1px solid var(--hidden); border-radius: var(--radius-pill);
+  padding: 6px 15px; font-family: var(--font-serif); font-size: 26px; font-weight: 600; letter-spacing: 0;
 }
 .trend {
   display: inline-flex; align-items: center; gap: 6px; margin-top: 10px;
   font-size: 12px; font-weight: 700; color: var(--good);
-  background: var(--good-weak); padding: 3px 10px; border-radius: 999px;
+  background: var(--good-weak); padding: 3px 10px; border-radius: var(--radius-pill);
 }
-
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, "Cascadia Code", monospace; }
 .commitment { font-size: 12px; color: var(--hidden); word-break: break-all; margin-top: 10px; line-height: 1.5; }
 
+/* ---------------------------------------------------------------------------
+   10. MISC PRIMITIVES (pills, rows, results, logs, callouts, banners)
+   --------------------------------------------------------------------------- */
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-.pill { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); font-weight: 600; }
+.pill { font-size: 11px; padding: 3px 9px; border-radius: var(--radius-pill); border: 1px solid var(--line-strong); color: var(--ink-mut); font-weight: 600; background: var(--parchment-2); }
 .pill.good { color: var(--good); border-color: var(--good); background: var(--good-weak); }
-.pill.mono-pill { font-family: ui-monospace, Menlo, monospace; }
+.pill.mono-pill { font-family: var(--font-mono); }
 
-/* ---------- Results / logs ---------- */
 .log {
-  background: #0f1b32; border: 1px solid #1c2a47; border-radius: 10px;
-  padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px; color: #c2cde3; white-space: pre-wrap; word-break: break-word;
+  background: var(--ink); border: 1px solid #221c22; border-radius: var(--radius-sm);
+  padding: 12px 14px; font-family: var(--font-mono);
+  font-size: 11.5px; color: #E4C9B9; white-space: pre-wrap; word-break: break-word;
   max-height: 220px; overflow: auto; margin-top: 12px;
 }
-.result { margin-top: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
-.result.ok { border-color: var(--good); background: var(--good-weak); color: #0b4a33; }
-.result.fail { border-color: var(--bad); background: var(--bad-weak); color: #7a1911; }
+.result { margin-top: 14px; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line); font-size: 14px; display: flex; flex-direction: column; gap: 4px; background: var(--parchment-2); }
+.result.ok { border-color: var(--good); background: var(--good-weak); color: #274a37; }
+.result.fail { border-color: var(--bad); background: var(--bad-weak); color: #6e1a14; }
 .result-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 .result-head .ico { font-weight: 700; }
 
-/* status badge on step cards */
 .done-tag {
   margin-left: auto; font-size: 11px; font-weight: 700; color: var(--good);
-  background: var(--good-weak); border: 1px solid var(--good); border-radius: 999px; padding: 3px 10px;
+  background: var(--good-weak); border: 1px solid var(--good); border-radius: var(--radius-pill); padding: 3px 10px;
 }
 
-.footnote { color: var(--muted); font-size: 12.5px; margin-top: 12px; line-height: 1.6; }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+.footnote { color: var(--ink-mut); font-size: 12.5px; margin-top: 12px; line-height: 1.6; }
 
-.spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; }
-button:not(.primary) .spinner { border: 2px solid rgba(31,78,216,0.3); border-top-color: var(--accent); }
+.spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(243,233,221,0.4); border-top-color: var(--cream); border-radius: 50%; animation: spin 0.7s linear infinite; }
+button:not(.primary) .spinner { border: 2px solid rgba(196,28,36,0.3); border-top-color: var(--red-brand); }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .disclosure {
   border: 1px solid var(--line-strong); border-left: 4px solid var(--warn); background: var(--warn-weak);
-  border-radius: 10px; padding: 12px 16px; font-size: 12.5px; color: var(--warn); margin-top: 14px; line-height: 1.6;
+  border-radius: var(--radius-sm); padding: 12px 16px; font-size: 12.5px; color: var(--warn); margin-top: 14px; line-height: 1.6;
 }
-.disclosure strong { color: #6b4600; }
+.disclosure strong { color: #6b5120; }
 
-/* skeleton loading */
 .skeleton {
-  background: linear-gradient(90deg, #eef2f8 25%, #e2e8f2 37%, #eef2f8 63%);
+  background: linear-gradient(90deg, var(--parchment-2) 25%, var(--parchment-3) 37%, var(--parchment-2) 63%);
   background-size: 400% 100%; animation: shimmer 1.4s ease infinite; border-radius: 8px;
 }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
 
 .callout {
   display: flex; gap: 14px; align-items: flex-start;
-  background: var(--accent-weak); border: 1px solid #cdd9fb; border-radius: var(--radius);
-  padding: 16px 18px; margin-top: 16px;
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line); border-left: 4px solid var(--gold);
+  border-radius: var(--radius); padding: 16px 18px; margin-top: 16px;
+  box-shadow: var(--emboss);
 }
 .callout .ico { font-size: 20px; line-height: 1; }
-.callout .body { font-size: 13.5px; color: var(--text-2); }
-.callout .body strong { color: var(--text); }
+.callout .body { font-size: 13.5px; color: var(--ink-2); }
+.callout .body strong { color: var(--ink); }
 
 .banner-err {
   border: 1px solid var(--bad); border-left: 4px solid var(--bad); background: var(--bad-weak);
-  color: #7a1911; border-radius: 10px; padding: 12px 16px; font-size: 13px; margin-bottom: 16px;
+  color: #6e1a14; border-radius: var(--radius-sm); padding: 12px 16px; font-size: 13px; margin-bottom: 16px;
 }
 
 .net-pill {
-  font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line-strong);
-  border-radius: 999px; padding: 4px 10px; background: var(--panel);
+  font-size: 11px; font-weight: 600; color: var(--cream); border: 1px solid rgba(243,233,221,0.3);
+  border-radius: var(--radius-pill); padding: 4px 10px; background: rgba(13,10,13,0.18);
 }
-.net-pill .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); margin-right: 6px; vertical-align: middle; }
+.net-pill .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #7FB58F; margin-right: 6px; vertical-align: middle; box-shadow: 0 0 6px rgba(127,181,143,0.8); }
 
 .contract-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 0; border-bottom: 1px solid var(--line);
 }
 .contract-row:last-child { border-bottom: none; }
+
+/* ---------------------------------------------------------------------------
+   11. PER-SCREEN REFINEMENTS (layered on the foundation for full coherence)
+   --------------------------------------------------------------------------- */
+
+/* Intro block below the header — the mythic hero copy on the red paper. */
+.brand h1 { max-width: 20ch; }
+
+/* The hero value cards carry a faint centaur watermark (mark-ink) so the two
+   headline figures read as the emblematic heart of the product. Kept very low
+   contrast so the gold/plum numbers stay dominant and legible. */
+.stat { isolation: isolate; }
+.stat::after {
+  content: "";
+  position: absolute; right: -18px; bottom: -22px;
+  width: 128px; height: 128px; z-index: 0;
+  background: url("/brand/mark-ink.png") no-repeat center / contain;
+  opacity: 0.05; pointer-events: none;
+  filter: saturate(0.6);
+}
+.stat .k, .stat .v, .stat .note, .stat .commitment, .stat .trend,
+.sg-hero-number { position: relative; z-index: 1; }
+
+/* Hidden / confidential hero gets the plum tint on its watermark + a seal feel. */
+.stat.hidden-accent { background: linear-gradient(180deg, var(--parchment) 0%, var(--hidden-weak) 180%); }
+.stat.hidden-accent .v { color: var(--hidden); }
+.stat.value-accent { background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%); }
+
+/* Header-action controls: make the wallet pill, net pill and auditor toggle a
+   coherent cream-on-red control cluster. */
+.sg-header__actions .net-pill,
+.sg-header__actions .pill { align-self: center; }
+.pill.good.mono-pill {
+  color: var(--cream); background: rgba(13,10,13,0.2);
+  border-color: rgba(243,233,221,0.3);
+}
+
+/* Auditor toggle: when on, it reads as the plum "disclosure" state even on red. */
+.sg-header__actions button[aria-pressed="true"] {
+  background: rgba(90,62,87,0.55); border-color: var(--hidden-weak); color: var(--cream);
+  box-shadow: 0 0 0 1px rgba(235,223,230,0.25) inset;
+}
+
+/* Reject card: the on-chain block reads as a deliberate shield moment. */
+.result.ok .result-head .ico,
+.result.fail .result-head .ico { font-size: 15px; }
+
+/* When the confidential balance is sealed, give the hidden hero a subtle ring. */
+.stat.hidden-accent { box-shadow: var(--emboss), 0 0 0 1px rgba(90,62,87,0.18); }
+
+/* Empty / not-sealed-yet state on the hero: clearly provisional, not an error. */
+.stat .v.provisional { color: var(--ink-mut); font-size: 24px; }
+
+/* Responsive: tighten the wrap + header on small screens. */
+@media (max-width: 560px) {
+  .wrap { padding: 20px 14px 72px; }
+  .brand h1 { font-size: 30px; }
+  .sg-header { flex-wrap: wrap; }
+  .sg-header__actions { width: 100%; justify-content: flex-start; margin-top: 6px; }
+  .stat .v, .sg-hero-number { font-size: 38px; }
+  .card { padding: 18px 16px; }
+}
+
+/* Reduced-motion: stop the shimmer + spinner churning. */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+  .spinner { animation-duration: 2.4s; }
+  button, .sg-btn { transition: none; }
+}
+
+/* ---------------------------------------------------------------------------
+   12. LANDING  (.lp) — one viewport, the centaur as the star.
+       Top bar (Docs + Connect), a centered stack, one quiet footer line.
+   --------------------------------------------------------------------------- */
+.lp {
+  min-height: 100vh;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  padding: 26px clamp(20px, 5vw, 52px) 30px;
+}
+.lp__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 22px;
+}
+.lp__docs {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--cream-dim);
+  padding: 8px 4px;
+}
+.lp__docs:hover { color: var(--cream); text-decoration: none; }
+.lp__connect { text-decoration: none; }
+.lp__connect:hover { text-decoration: none; }
+
+/* Centered hero stack — generous vertical rhythm, the mark dominant. */
+.lp__stage {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+  /* nudge optically above dead-center so the footer line reads as margin */
+  padding-bottom: clamp(24px, 6vh, 64px);
+}
+.lp__mark {
+  width: clamp(240px, 40vw, 468px);
+  height: auto;
+  filter: drop-shadow(0 14px 40px rgba(14, 6, 5, 0.42));
+  margin-bottom: clamp(14px, 3vh, 32px);
+}
+.lp__title {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  color: var(--cream);
+  font-size: clamp(52px, 9vw, 108px);
+  line-height: 0.95;
+  letter-spacing: 0.5px;
+  text-shadow: 0 2px 22px rgba(13, 10, 13, 0.32);
+}
+.lp__line {
+  font-family: var(--font-ui);
+  font-size: clamp(14px, 1.7vw, 17px);
+  font-weight: 400;
+  color: var(--cream-dim);
+  max-width: 46ch;
+  line-height: 1.5;
+  margin-top: 14px;
+}
+.lp__foot {
+  flex: none;
+  text-align: center;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: rgba(243, 233, 221, 0.4);
+}
+
+/* ---------------------------------------------------------------------------
+   13. DOCS  (.doc) — one quiet reading sheet on parchment.
+   --------------------------------------------------------------------------- */
+.doc {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 26px clamp(20px, 5vw, 52px) 80px;
+}
+.doc__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: clamp(32px, 6vh, 64px);
+}
+.doc__home {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--cream);
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+}
+.doc__home:hover { text-decoration: none; opacity: 0.85; }
+.doc__home img { filter: drop-shadow(0 1px 6px rgba(13, 10, 13, 0.35)); }
+
+.doc__sheet {
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--emboss);
+  padding: clamp(32px, 5vw, 64px);
+  color: var(--ink);
+}
+.doc__eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--red-brand);
+  margin-bottom: 16px;
+}
+.doc__h1 {
+  font-family: var(--font-serif);
+  font-size: clamp(32px, 4.4vw, 46px);
+  font-weight: 600;
+  line-height: 1.08;
+  color: var(--ink);
+  max-width: 18ch;
+}
+.doc__lede {
+  margin-top: 20px;
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.doc__h2 {
+  font-family: var(--font-serif);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-top: 40px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+}
+.doc p { margin-top: 14px; font-size: 15px; line-height: 1.68; color: var(--ink-2); }
+.doc__flow {
+  margin-top: 20px;
+  background: var(--parchment-3);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--radius-sm);
+  padding: 18px 20px;
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--ink);
+}
+.doc__list {
+  margin: 16px 0 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.doc__list li { font-size: 15px; line-height: 1.6; color: var(--ink-2); }
+.doc__cta {
+  margin-top: 40px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.doc__cta .sg-btn { text-decoration: none; }
+.doc__ext { font-family: var(--font-ui); font-size: 14px; font-weight: 600; color: var(--red-brand); }
+.doc__meta {
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-mut);
+}
+
+@media (max-width: 560px) {
+  .lp { padding-left: 18px; padding-right: 18px; }
+  .lp__bar { gap: 16px; }
+  .lp__docs { padding-left: 0; padding-right: 0; }
+  .doc { padding-left: 18px; padding-right: 18px; }
+  .doc__sheet { padding: 28px 20px; }
+}
+
+/* ---------------------------------------------------------------------------
+   14. DOCS — FULL PROTOCOL DOCUMENTATION
+       A longer editorial reading sheet on parchment. Serif headings, Inter
+       body, generous measure. Layers onto the .doc tokens above.
+   --------------------------------------------------------------------------- */
+
+/* The reading sheet widens a touch for the longer document + diagram. */
+.doc__sheet--long { max-width: 760px; }
+
+/* Top bar: centaur home link + connect-wallet, on the red. Reuses .doc__bar. */
+.doc__bar .doc__connect { text-decoration: none; }
+.doc__bar .doc__connect:hover { text-decoration: none; }
+.doc__wallet {
+  font-family: var(--font-ui); font-size: 13px; font-weight: 600;
+  color: var(--cream); border: 1px solid rgba(243,233,221,0.32);
+  border-radius: var(--radius-pill); padding: 7px 14px; background: rgba(13,10,13,0.2);
+}
+
+/* Section anchoring + numbering. Each §N gets a serif numeral eyebrow. */
+.doc__section { margin-top: 48px; scroll-margin-top: 28px; }
+.doc__section:first-of-type { margin-top: 0; }
+.doc__num {
+  font-family: var(--font-serif); font-weight: 600; font-size: 13px;
+  letter-spacing: 1px; color: var(--red-brand); text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: 10px;
+}
+.doc__num::after {
+  content: ""; height: 1px; width: 44px; background: var(--line-strong);
+  display: inline-block;
+}
+.doc__section .doc__h2 {
+  margin-top: 10px; padding-top: 0; border-top: none;
+  font-size: clamp(24px, 3vw, 30px); line-height: 1.14; max-width: 24ch;
+}
+
+/* A quiet hairline rule between major sections. */
+.doc__rule { height: 1px; background: var(--line); margin: 48px 0 0; border: none; }
+
+/* Inline code / contract-id style inside body copy. */
+.doc code, .doc .doc__code {
+  font-family: var(--font-mono); font-size: 0.86em;
+  background: var(--parchment-3); border: 1px solid var(--line);
+  border-radius: 5px; padding: 1px 6px; color: var(--ink);
+  word-break: break-word;
+}
+
+/* Lede for a section — slightly larger than body, ink-2. */
+.doc__kicker { margin-top: 16px; font-size: 16px; line-height: 1.6; color: var(--ink-2); }
+
+/* Pull-quote / key-insight panel — the one gold accent moment per idea. */
+.doc__insight {
+  margin-top: 24px; padding: 22px 26px;
+  border: 1px solid var(--line); border-left: 4px solid var(--gold);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  box-shadow: var(--emboss-inset);
+}
+.doc__insight p { margin-top: 0; font-size: 16px; line-height: 1.6; color: var(--ink); }
+.doc__insight p + p { margin-top: 12px; }
+.doc__insight .doc__insight-k {
+  font-size: 11px; letter-spacing: 1.2px; text-transform: uppercase;
+  font-weight: 700; color: var(--warn); margin-bottom: 10px;
+}
+
+/* ---- ARCHITECTURE DIAGRAM (pure CSS/HTML, in-brand) ---------------------- */
+.doc__diagram {
+  margin-top: 28px;
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+}
+.doc__node {
+  width: 100%; max-width: 460px;
+  background: linear-gradient(180deg, var(--parchment) 0%, var(--parchment-2) 100%);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  padding: 16px 20px; box-shadow: var(--emboss);
+  position: relative;
+}
+.doc__node--ours { border-left: 4px solid var(--red-brand); }
+.doc__node--oz { border-left: 4px solid var(--hidden); }
+.doc__node-top {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+}
+.doc__node-name {
+  font-family: var(--font-serif); font-weight: 600; font-size: 19px; color: var(--ink);
+}
+.doc__node-tag {
+  font-family: var(--font-ui); font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.8px; text-transform: uppercase;
+}
+.doc__node-tag--ours { color: var(--red-brand); }
+.doc__node-tag--oz { color: var(--hidden); }
+.doc__node-desc { margin-top: 6px; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.doc__arrow {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 8px 0; color: var(--ink-mut);
+}
+.doc__arrow-label {
+  font-family: var(--font-ui); font-size: 11px; font-weight: 600;
+  letter-spacing: 0.4px; color: var(--ink-mut);
+}
+.doc__arrow-line {
+  width: 1.5px; height: 20px; background: var(--line-strong); margin: 4px 0;
+}
+.doc__arrow-head { font-size: 13px; line-height: 1; color: var(--line-strong); margin-top: -8px; }
+.doc__diagram-note {
+  margin-top: 18px; font-size: 12.5px; line-height: 1.6; color: var(--ink-mut);
+  max-width: 52ch; text-align: center;
+}
+
+/* ---- LIFECYCLE (numbered editorial list, not cards) ---------------------- */
+.doc__life { margin-top: 24px; counter-reset: life; display: flex; flex-direction: column; }
+.doc__life-step {
+  display: grid; grid-template-columns: auto 1fr; gap: 18px;
+  padding: 16px 0; border-top: 1px solid var(--line);
+}
+.doc__life-step:first-child { border-top: none; }
+.doc__life-step::before {
+  counter-increment: life; content: counter(life);
+  font-family: var(--font-serif); font-weight: 600; font-size: 22px;
+  color: var(--red-brand); line-height: 1; width: 1.4ch; text-align: right;
+}
+.doc__life-body h3 {
+  font-family: var(--font-serif); font-size: 18px; font-weight: 600; color: var(--ink);
+}
+.doc__life-body p { margin-top: 5px; font-size: 14px; line-height: 1.6; color: var(--ink-2); }
+
+/* ---- CAVEATS (sober warn-tinted list) ------------------------------------ */
+.doc__caveats {
+  margin-top: 22px; border: 1px solid var(--line-strong); border-left: 4px solid var(--warn);
+  border-radius: var(--radius-sm); background: var(--warn-weak);
+  padding: 6px 22px 10px; list-style: none;
+}
+.doc__caveats li {
+  padding: 13px 0; border-top: 1px solid rgba(138,106,47,0.22);
+  font-size: 14px; line-height: 1.6; color: #6b5120;
+}
+.doc__caveats li:first-child { border-top: none; }
+.doc__caveats li strong { color: #543f14; }
+
+/* ---- CONTRACTS TABLE ----------------------------------------------------- */
+.doc__table-wrap { margin-top: 24px; overflow-x: auto; border-radius: var(--radius-sm); }
+.doc__table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.doc__table thead th {
+  text-align: left; font-family: var(--font-ui); font-weight: 700; font-size: 11px;
+  letter-spacing: 0.8px; text-transform: uppercase; color: var(--ink-mut);
+  padding: 0 14px 10px; border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+.doc__table tbody td {
+  padding: 13px 14px; border-bottom: 1px solid var(--line); vertical-align: top;
+  color: var(--ink-2); line-height: 1.5;
+}
+.doc__table tbody tr:last-child td { border-bottom: none; }
+.doc__table .doc__t-name { font-family: var(--font-serif); font-weight: 600; font-size: 16px; color: var(--ink); white-space: nowrap; }
+.doc__table .doc__t-id a { font-family: var(--font-mono); font-size: 12px; color: var(--red-brand); word-break: break-all; }
+.doc__t-origin {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+}
+.doc__t-origin--ours { color: var(--red-brand); }
+.doc__t-origin--oz { color: var(--hidden); }
+
+/* ---- TOC (quiet right-hand jump list on wide screens) -------------------- */
+.doc__layout { display: block; }
+@media (min-width: 1080px) {
+  .doc__layout {
+    display: grid; grid-template-columns: 1fr minmax(0, 760px) 1fr; gap: 0;
+    align-items: start;
+  }
+  .doc__sheet--long { grid-column: 2; }
+  .doc__toc {
+    grid-column: 3; position: sticky; top: 28px; justify-self: start;
+    margin-left: 40px; padding-top: 8px; max-width: 200px;
+  }
+}
+.doc__toc { display: none; }
+@media (min-width: 1080px) { .doc__toc { display: block; } }
+.doc__toc-title {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase;
+  color: rgba(243,233,221,0.6); margin-bottom: 14px;
+}
+.doc__toc a {
+  display: block; font-family: var(--font-ui); font-size: 13px; line-height: 1.5;
+  color: var(--cream-dim); padding: 5px 0;
+}
+.doc__toc a:hover { color: var(--cream); text-decoration: none; }
+
+/* CTA row + closing meta reuse .doc__cta / .doc__meta from section 13. */
+.doc__closing { margin-top: 48px; padding-top: 28px; border-top: 1px solid var(--line); }

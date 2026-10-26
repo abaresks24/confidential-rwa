@@ -20,7 +20,10 @@ import { execFile } from "node:child_process";
 import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const ROOT = join(process.cwd(), "..");
+// Repo root that holds scripts/, deployments/, out/, circuits/, reference/.
+// Local dev: web/ -> repo root is one level up. In the Fly container the server
+// runs from a different cwd, so REPO_ROOT is set explicitly by the entrypoint.
+const ROOT = process.env.REPO_ROOT || join(process.cwd(), "..");
 const SCRIPTS = join(ROOT, "scripts");
 const DEPLOY = join(ROOT, "deployments", "testnet.json");
 const NET = "testnet";
@@ -38,11 +41,34 @@ type Deploy = {
   oz_as_is: string[];
 };
 
-export const d: Deploy = JSON.parse(readFileSync(DEPLOY, "utf8"));
-export const C = d.contracts;
-export const A = d.key_aliases;
-export const AUD_ID = String(d.auditor_id ?? 0);
-const FP = A.feepayer;
+// Lazily load + memoize the deployment file. Must NOT run at module import time:
+// Next.js collects route "page data" during the production build (before the
+// deployment file is present in the web-build stage), so a top-level read would
+// break `next build`. Every consumer is a request-time function, so first-use
+// loading is correct.
+let _d: Deploy | null = null;
+function loadD(): Deploy {
+  if (!_d) _d = JSON.parse(readFileSync(DEPLOY, "utf8")) as Deploy;
+  return _d;
+}
+
+// Proxies keep the ergonomic `d.network` / `C.wsFUND` / `A.alice` call sites
+// while deferring the file read to first property access (request time).
+export const d: Deploy = new Proxy({} as Deploy, {
+  get: (_t, p) => loadD()[p as keyof Deploy],
+}) as Deploy;
+export const C: Record<string, string> = new Proxy({} as Record<string, string>, {
+  get: (_t, p) => loadD().contracts[p as string],
+});
+export const A: Record<string, string> = new Proxy({} as Record<string, string>, {
+  get: (_t, p) => loadD().key_aliases[p as string],
+});
+function audId(): string {
+  return String(loadD().auditor_id ?? 0);
+}
+function fp(): string {
+  return loadD().key_aliases.feepayer;
+}
 
 const IDENTITY64 = "0".repeat(128);
 const TOTAL_FILE = join(ROOT, "out", "register_alice", "conf_total");
@@ -69,7 +95,7 @@ function sh(cmd: string, args: string[]): Promise<ShResult> {
 // read-only invoke -> trimmed scalar string
 async function call(id: string, ...fnArgs: string[]): Promise<string> {
   const r = await sh("stellar", [
-    "contract", "invoke", "--id", id, "--source", FP, "--network", NET, "--", ...fnArgs,
+    "contract", "invoke", "--id", id, "--source", fp(), "--network", NET, "--", ...fnArgs,
   ]);
   return r.stdout.trim().replace(/^"|"$/g, "");
 }
@@ -85,7 +111,7 @@ async function send(id: string, signer: string, ...fnArgs: string[]): Promise<st
 
 async function confField(accountAlias: string, field: string): Promise<string> {
   const r = await sh("stellar", [
-    "contract", "invoke", "--id", C.compliant_token, "--source", FP, "--network", NET,
+    "contract", "invoke", "--id", C.compliant_token, "--source", fp(), "--network", NET,
     "--", "confidential_balance", "--account", accountAlias,
   ]);
   const m = (r.stdout || "").match(new RegExp('"?' + field + '"?\\s*:\\s*"?([0-9a-fA-F]+)"?'));
@@ -94,16 +120,17 @@ async function confField(accountAlias: string, field: string): Promise<string> {
 
 // -----------------------------------------------------------------------------
 export function config() {
+  const dep = loadD();
   return {
-    network: d.network,
-    passphrase: d.network_passphrase,
-    contracts: C,
-    accounts: d.accounts,
-    aliases: A,
-    auditor_id: AUD_ID,
-    ours: d.ours,
-    oz_as_is: d.oz_as_is,
-    note: d.note,
+    network: dep.network,
+    passphrase: dep.network_passphrase,
+    contracts: dep.contracts,
+    accounts: dep.accounts,
+    aliases: dep.key_aliases,
+    auditor_id: audId(),
+    ours: dep.ours,
+    oz_as_is: dep.oz_as_is,
+    note: dep.note,
     explorer: "https://stellar.expert/explorer/testnet/contract/",
   };
 }
@@ -122,7 +149,7 @@ export async function state() {
     confField(A.alice, "receiving_commitment"),
     confField(A.alice, "spendable_commitment"),
     confField(A.alice, "spending_public_key"),
-    call(C.auditor, "get_key", "--auditor_id", AUD_ID),
+    call(C.auditor, "get_key", "--auditor_id", audId()),
     call(C.allowlist_policy, "is_authorized", "--account", A.alice, "--token", C.compliant_token),
     call(C.allowlist_policy, "is_authorized", "--account", A.bob, "--token", C.compliant_token),
   ]);
@@ -201,7 +228,7 @@ export async function registerBob() {
   if (!existsSync(proofHex)) return { ok: false, label: "Missing register proof; run scripts/prove first", log: "" };
   const dataBob = (await sh("node", [join(SCRIPTS, "build_register_data.mjs"), proofHex])).stdout.trim();
   const out = await send(
-    C.compliant_token, A.bob, "register", "--account", A.bob, "--auditor_id", AUD_ID, "--data", dataBob
+    C.compliant_token, A.bob, "register", "--account", A.bob, "--auditor_id", audId(), "--data", dataBob
   );
   const rejected = out.includes("Error(Contract, #3602)");
   return {
